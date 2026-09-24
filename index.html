@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Job Tracker - Signs &amp; Stitches</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="logo.png" alt="Signs &amp; Stitches" class="logo" width="47" height="48">
+      <div class="brand-text">
+        <span class="brand-name">Job Tracker</span>
+        <span class="sync" id="sync" aria-live="polite">Loading...</span>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab" role="tab" data-view="open" id="tab-open" aria-selected="true">Open Jobs <span class="count" id="count-open"></span></button>
+      <button class="tab" role="tab" data-view="closed" id="tab-closed" aria-selected="false">Closed <span class="count" id="count-closed"></span></button>
+    </nav>
+    <div class="actions">
+      <button class="btn btn-ghost" id="export-btn" type="button">Export CSV</button>
+      <button class="btn btn-primary" id="new-btn" type="button">New Job</button>
+    </div>
+  </header>
+
+  <div class="demo-banner" id="demo-banner" hidden>
+    Demo mode: not connected to the Google Sheet. Changes stay in this browser only.
+    <button class="link-btn" id="demo-reset" type="button">Reset demo data</button>
+  </div>
+
+  <section class="filters" aria-label="Search and filters">
+    <input type="search" id="f-search" class="input search" placeholder="Search customer, job #, description" autocomplete="off">
+    <select id="f-type" class="input" aria-label="Project type"><option value="">All types</option></select>
+    <select id="f-field" class="input" aria-label="Filter by field"><option value="">Any field</option></select>
+    <select id="f-value" class="input" aria-label="Field value" disabled><option value="">Any value</option></select>
+    <button class="btn btn-ghost" id="f-clear" type="button" hidden>Clear</button>
+    <span class="result-count" id="result-count"></span>
+  </section>
+
+  <main id="main">
+    <div class="table-wrap" id="table-wrap"></div>
+    <div class="cards" id="cards"></div>
+    <p class="empty" id="empty" hidden></p>
+  </main>
+
+  <!-- Chip picker (popover on desktop, bottom sheet on phones) -->
+  <div class="picker-backdrop" id="picker-backdrop" hidden></div>
+  <div class="picker" id="picker" role="dialog" aria-modal="false" hidden>
+    <div class="picker-title" id="picker-title"></div>
+    <div class="picker-options" id="picker-options"></div>
+  </div>
+
+  <!-- Job detail drawer -->
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+  <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-kicker" id="drawer-kicker"></div>
+        <h2 id="drawer-title"></h2>
+      </div>
+      <button class="btn btn-ghost" id="drawer-close" type="button">Close</button>
+    </div>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
+
+  <!-- New job -->
+  <dialog class="modal" id="new-dialog" aria-labelledby="new-title">
+    <form id="new-form" method="dialog" novalidate>
+      <div class="modal-head">
+        <h2 id="new-title">New Job</h2>
+        <button class="btn btn-ghost" type="button" id="new-cancel">Cancel</button>
+      </div>
+      <div class="form-grid">
+        <label class="field span-2">Customer <span class="req">required</span>
+          <input class="input" name="customer" required autocomplete="off">
+        </label>
+        <label class="field">Project Type <span class="req">required</span>
+          <select class="input" name="type" required><option value="">Choose...</option></select>
+        </label>
+        <label class="field">Due Date <span class="req">required</span>
+          <span class="date-says" data-says="due"></span>
+          <input class="input" type="date" name="due" required>
+        </label>
+        <label class="field">Date In
+          <span class="date-says" data-says="dateIn"></span>
+          <input class="input" type="date" name="dateIn">
+        </label>
+        <label class="field">Qty
+          <input class="input" type="number" name="qty" min="0" inputmode="numeric">
+        </label>
+        <label class="field span-2">Description
+          <input class="input" name="description" autocomplete="off">
+        </label>
+        <label class="field">Contact Name
+          <input class="input" name="contact" autocomplete="off">
+        </label>
+        <label class="field">Phone
+          <input class="input" type="tel" name="phone" autocomplete="off">
+        </label>
+        <label class="field span-2">Email
+          <input class="input" type="email" name="email" autocomplete="off">
+        </label>
+        <label class="field span-2">Notes
+          <textarea class="input" name="notes" rows="2"></textarea>
+        </label>
+      </div>
+      <p class="form-error" id="new-error" role="alert" hidden></p>
+      <div class="modal-foot">
+        <button class="btn btn-primary btn-wide" type="submit" id="new-submit">Create Job</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <script src="config.js" onerror="void 0"></script>
+  <script src="api.js"></script>
+  <script src="options.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
