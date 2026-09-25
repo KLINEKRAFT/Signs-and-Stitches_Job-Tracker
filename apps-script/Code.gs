@@ -5,8 +5,11 @@
  * this script:
  *   GET  ?                          -> all jobs, dropdown lists and per-type rules
  *   GET  ?action=activity&job=1001  -> activity log for one job
- *   POST {action:"create", job:{...}}
+ *   POST {action:"create", job:{...}}                one job
+ *   POST {action:"create", jobs:[{...},{...}]}       several projects for one customer, linked by Order #
+ *   POST {action:"create", jobs:[{...}], linkTo:1001} add a project to job 1001's order
  *   POST {action:"update", job:1001, field:"artwork", value:"Approved"}
+ *   POST {action:"link", job:1003, to:1001}          put job 1003 in job 1001's order
  *   POST {action:"appendActivity", job:1001, field:"Notes", oldValue:"", newValue:"..."}
  *
  * POST bodies are sent as text/plain JSON so browsers skip the CORS preflight.
@@ -26,6 +29,15 @@ var DATE_FORMAT = 'dd mmm yyyy';
 var STAMP_FORMAT = 'dd mmm yyyy h:mm am/pm';
 var ACTIVITY_HEADERS = ['Timestamp', 'Job #', 'Field', 'Old Value', 'New Value'];
 var RULES_HEADERS = ['Field', 'Option', 'Only For Project Types'];
+// Options added to the Lists tab by setup(): [column, option, 'before'|'after', neighbour].
+var LIST_ADDITIONS = [
+  ['Status', 'On Hold', 'after', 'Active'],
+  ['Estimate', 'Not Sent', 'before', 'Sent'],
+  ['Artwork', 'Being Designed', 'before', 'Sent to Customer']
+];
+// Values a new job starts with when the form leaves them blank.
+var NEW_JOB_DEFAULTS = { status: 'Active', estimate: 'Not Sent' };
+var LIST_COLUMNS = ['Project Type', 'Status', 'Estimate', 'Material', 'Artwork', 'Production', 'Delivery', 'Payment'];
 var RULES_SEED = [
   ['Artwork', 'Digitized', 'Embroidery - Hats, Embroidery - Apparel, Embroidery - Other']
 ];
@@ -51,8 +63,11 @@ var FIELDS = [
   ['payment', 'Payment', 'text'],
   ['notes', 'Notes', 'text'],
   ['createdAt', 'Created At', 'stamp'],
-  ['updatedAt', 'Updated At', 'stamp']
+  ['updatedAt', 'Updated At', 'stamp'],
+  // Jobs that came in together share an Order # (the first job's number). Blank = on its own.
+  ['order', 'Order #', 'number']
 ];
+var ADDED_COLUMNS = ['Created At', 'Updated At', 'Order #'];
 var READ_ONLY = { job: true, createdAt: true, updatedAt: true };
 var REQUIRED = { customer: 'Customer', type: 'Project Type', due: 'Due Date' };
 
@@ -81,7 +96,11 @@ function doPost(e) {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     var result = withLock_(function () {
       switch (body.action) {
-        case 'create': return { job: createJob_(body.job || {}) };
+        case 'create': {
+          var made = createJobs_(body.jobs || [body.job || {}], Number(body.linkTo) || 0);
+          return { job: made[0], jobs: made };
+        }
+        case 'link': return { jobs: linkJob_(Number(body.job), Number(body.to)) };
         case 'update': return { job: updateField_(Number(body.job), body.field, body.value) };
         case 'appendActivity':
           appendActivity_(Number(body.job), body.field, body.oldValue, body.newValue);
@@ -156,13 +175,13 @@ function fieldByHeader_(header) {
   return null;
 }
 
-/** Map of header text -> 1-based column in the Job Log. Adds Created At / Updated At if missing. */
+/** Map of header text -> 1-based column in the Job Log. Adds Created At / Updated At / Order # if missing. */
 function jobColumns_(sh) {
   var lastCol = Math.max(sh.getLastColumn(), 1);
   var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
   var cols = {};
   headers.forEach(function (h, i) { if (h !== '') cols[String(h).trim()] = i + 1; });
-  ['Created At', 'Updated At'].forEach(function (h) {
+  ADDED_COLUMNS.forEach(function (h) {
     if (!cols[h]) {
       lastCol++;
       sh.getRange(1, lastCol).setValue(h).setFontWeight('bold');
@@ -340,10 +359,55 @@ function nextJobNumber_(sh, cols) {
   return max + 1;
 }
 
-function createJob_(data) {
+function checkRequired_(data) {
   Object.keys(REQUIRED).forEach(function (k) {
     if (!String(data[k] == null ? '' : data[k]).trim()) throw new Error(REQUIRED[k] + ' is required');
   });
+}
+
+/**
+ * Creates one or more jobs. Several at once (a customer ordering hats, a banner
+ * and golf balls together) are linked with the first new job's number as Order #.
+ * linkTo adds the new jobs to an existing job's order instead.
+ */
+function createJobs_(list, linkTo) {
+  if (!list.length) throw new Error('Nothing to create');
+  list.forEach(checkRequired_); // all or nothing
+  var sh = sheet_(JOB_SHEET);
+  var cols = jobColumns_(sh);
+  var group = 0;
+  if (linkTo) group = ensureOrder_(sh, cols, linkTo);
+  else if (list.length > 1) group = nextJobNumber_(sh, cols);
+  return list.map(function (data) {
+    var d = {};
+    Object.keys(data).forEach(function (k) { d[k] = data[k]; });
+    if (group) d.order = group;
+    return createJob_(d);
+  });
+}
+
+/** Returns the Order # of a job, giving it one (its own number) if it has none yet. */
+function ensureOrder_(sh, cols, jobNo) {
+  var row = findRow_(sh, cols, jobNo);
+  if (row < 0) throw new Error('Job ' + jobNo + ' not found');
+  var current = sh.getRange(row, cols['Order #']).getValue();
+  if (current !== '' && !isNaN(Number(current))) return Number(current);
+  updateField_(jobNo, 'order', jobNo);
+  return jobNo;
+}
+
+function linkJob_(jobNo, to) {
+  if (!jobNo || !to) throw new Error('Missing job number');
+  if (jobNo === to) throw new Error('A job cannot be linked to itself');
+  var sh = sheet_(JOB_SHEET);
+  var cols = jobColumns_(sh);
+  var group = ensureOrder_(sh, cols, to);
+  var job = updateField_(jobNo, 'order', group);
+  return [readJobAtRow_(sh, findRow_(sh, cols, to)), job];
+}
+
+function createJob_(data) {
+  checkRequired_(data);
   var sh = sheet_(JOB_SHEET);
   var cols = jobColumns_(sh);
   var jobNo = nextJobNumber_(sh, cols);
@@ -355,7 +419,9 @@ function createJob_(data) {
     if (!READ_ONLY[f[0]] && data[f[0]] != null) values[f[0]] = data[f[0]];
   });
   if (!values.dateIn) values.dateIn = Utilities.formatDate(now, tz_(), 'yyyy-MM-dd');
-  if (!values.status) values.status = 'Active';
+  Object.keys(NEW_JOB_DEFAULTS).forEach(function (k) {
+    if (!values[k]) values[k] = NEW_JOB_DEFAULTS[k];
+  });
   values.job = jobNo;
   values.createdAt = now;
   values.updatedAt = now;
@@ -458,6 +524,27 @@ function setup() {
     }
   });
 
+  // On Hold jobs are still open: show them on the sheet's Open Jobs tab too.
+  var openView = ss_().getSheetByName('Open Jobs');
+  if (openView) {
+    var of = openView.getRange(1, 1, Math.min(10, openView.getMaxRows()), 1).getFormulas();
+    for (var i = 0; i < of.length; i++) {
+      var fx = of[i][0];
+      if (fx && /FILTER\(/i.test(fx) && fx.indexOf('On Hold') < 0) {
+        var withHold = fx.replace(/('Job Log'!\$?[A-Z]{1,3}\$?2:\$?[A-Z]{1,3})="Active"/,
+          '($1="Active")+($1="On Hold")');
+        if (withHold !== fx) {
+          openView.getRange(i + 1, 1).setFormula(withHold);
+          notes.push('Open Jobs: now includes On Hold jobs');
+        }
+      }
+    }
+  }
+
+  LIST_ADDITIONS.forEach(function (a) {
+    if (addListOption_(a[0], a[1], a[2], a[3])) notes.push('Lists: added "' + a[1] + '" to ' + a[0]);
+  });
+
   // Carry the Job Log dropdowns down the whole sheet.
   if (maxRows > 2) {
     var width = jobs.getLastColumn();
@@ -465,6 +552,51 @@ function setup() {
       SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION, false);
   }
 
+  // Point each dropdown at its whole Lists column, so options added later show up in the sheet too.
+  // Invalid entries only get a warning, never a rejection.
+  var lists = listsLayout_();
+  LIST_COLUMNS.forEach(function (h) {
+    if (!cols[h] || !lists.cols[h]) return;
+    var source = lists.sheet.getRange(lists.firstItemRow, lists.cols[h], lists.sheet.getMaxRows() - lists.firstItemRow + 1, 1);
+    var rule = SpreadsheetApp.newDataValidation().requireValueInRange(source, true).setAllowInvalid(true).build();
+    jobs.getRange(2, cols[h], maxRows - 1, 1).setDataValidation(rule);
+  });
+  notes.push('Job Log dropdowns now read the whole Lists columns');
+
   Logger.log(notes.join('\n'));
   return notes;
+}
+
+function listsLayout_() {
+  var sh = sheet_(LISTS_SHEET);
+  var values = sh.getDataRange().getValues();
+  for (var r = 0; r < values.length; r++) {
+    if (String(values[r][0]).trim().toLowerCase() === 'project type') {
+      var cols = {};
+      values[r].forEach(function (h, c) { if (String(h).trim()) cols[String(h).trim()] = c + 1; });
+      return { sheet: sh, values: values, headerRow: r + 1, firstItemRow: r + 2, cols: cols };
+    }
+  }
+  throw new Error('Lists tab needs a header row starting with "Project Type"');
+}
+
+/** Adds an option to a Lists column next to a neighbour, if it is not there yet. */
+function addListOption_(header, option, where, neighbour) {
+  var l = listsLayout_();
+  var col = l.cols[header];
+  if (!col) return false;
+  var items = [];
+  for (var r = l.headerRow; r < l.values.length; r++) {
+    var v = String(l.values[r][col - 1]).trim();
+    if (v) items.push(v);
+  }
+  if (items.indexOf(option) >= 0) return false;
+  var at = items.indexOf(neighbour);
+  if (at < 0) items.push(option);
+  else items.splice(where === 'after' ? at + 1 : at, 0, option);
+  var height = Math.max(items.length, l.values.length - l.headerRow);
+  var out = [];
+  for (var i = 0; i < height; i++) out.push([items[i] || '']);
+  l.sheet.getRange(l.firstItemRow, col, height, 1).setValues(out);
+  return true;
 }
