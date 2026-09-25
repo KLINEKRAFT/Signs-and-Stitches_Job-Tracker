@@ -254,6 +254,64 @@ table.jobs { border-collapse: separate; border-spacing: 0; width: 100%; font-siz
 .chip-label { font-weight: 500; opacity: 0.8; }
 .card-chips .chip-label { font-size: 12px; }
 
+/* ------------------------------------------------------------ Orders (linked projects) */
+
+.order-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin: 2px 0 4px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1.5px solid transparent;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.order-badge.order-waiting { background: var(--amber-bg); color: var(--amber-fg); border-color: var(--amber-bd); }
+.order-badge.order-ready { background: var(--green-bg); color: var(--green-fg); border-color: var(--green-bd); }
+.order-badge:hover { border-color: currentColor; }
+.jobs .row-linked td.sticky-1 { box-shadow: inset 4px 0 0 var(--amber-bd); }
+.jobs .row-linked.row-dead td.sticky-1 { box-shadow: inset 4px 0 0 var(--black); }
+
+.drawer-order { margin-top: 12px; }
+.order-banner { padding: 12px 14px; border-radius: var(--radius); font-size: 14px; border: 1.5px solid; }
+.order-banner.order-waiting { background: var(--amber-bg); color: var(--amber-fg); border-color: var(--amber-bd); }
+.order-banner.order-ready { background: var(--green-bg); color: var(--green-fg); border-color: var(--green-bd); }
+.mates { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mate {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 8px 12px;
+  border: 1px solid var(--grey-200);
+  border-radius: var(--radius);
+  background: var(--white);
+  text-align: left;
+}
+.mate:hover { border-color: var(--black); }
+.mate-name { font-weight: 600; }
+.mate-state { font-size: 13px; color: var(--grey-700); }
+.order-solo { margin: 0; font-size: 14px; color: var(--grey-700); }
+.order-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.link-pick { display: flex; flex-direction: column; font-size: 13px; font-weight: 600; color: var(--grey-700); flex: 1 1 220px; }
+.link-pick .input { margin-top: 4px; }
+
+/* New job: one row per project */
+.projects { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.project-row { display: grid; grid-template-columns: 1.2fr 1fr auto; gap: 10px; align-items: end; }
+.project-row .remove-project { visibility: hidden; }
+.projects.is-multi .project-row { padding: 10px; border: 1px solid var(--grey-200); border-left: 4px solid var(--amber-bd); border-radius: var(--radius); }
+.projects.is-multi .remove-project { visibility: visible; }
+.add-project { margin-top: 10px; width: 100%; border-style: dashed; white-space: normal; padding-top: 8px; padding-bottom: 8px; }
+.order-actions .btn { white-space: normal; }
+.hint { font-size: 13px; color: var(--grey-500); margin: 8px 0 0; }
+.new-note { margin: 0 0 12px; padding: 10px 12px; border-radius: var(--radius); background: var(--amber-bg); color: var(--amber-fg); font-weight: 600; font-size: 14px; }
+.more { margin-top: 14px; border-top: 1px solid var(--grey-200); padding-top: 8px; }
+.more summary { min-height: var(--tap); display: flex; align-items: center; font-weight: 600; cursor: pointer; color: var(--grey-700); }
+.more .form-grid { margin-top: 4px; }
+
 /* ------------------------------------------------------------ Picker */
 
 .picker-backdrop { position: fixed; inset: 0; z-index: 30; background: transparent; }
@@ -305,6 +363,9 @@ table.jobs { border-collapse: separate; border-spacing: 0; width: 100%; font-siz
 .card-due .due { flex-direction: row; gap: 8px; align-items: baseline; color: var(--black); }
 .card-due .due-overdue, .card-due .due-overdue .due-note { color: var(--redchip-fg); }
 .card-due .due-soon, .card-due .due-soon .due-note { color: var(--amber-fg); }
+.card-linked { border-left-color: var(--amber-bd); }
+.card-order { padding: 0 14px 4px; }
+.card-order .order-badge { min-height: var(--tap); font-size: 13px; }
 .card-chips { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 4px 14px 14px; }
 .card-chips .chip { width: 100%; min-width: 0; justify-content: space-between; padding: 0 10px; }
 .card-chips .chip-value { overflow: hidden; text-overflow: ellipsis; }
@@ -409,6 +470,18 @@ table.jobs { border-collapse: separate; border-spacing: 0; width: 100%; font-siz
   transition: opacity 0.3s ease;
 }
 .toast-error { background: var(--red); }
+.toast-warn { background: var(--amber-bg); color: var(--amber-fg); border: 2px solid var(--amber-bd); }
+.toast-ok { background: var(--green-fg); }
+.toast-sticky { display: flex; gap: 12px; align-items: center; pointer-events: auto; }
+.toast-close {
+  flex: none;
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1.5px solid currentColor;
+  border-radius: var(--radius);
+  background: var(--white);
+  font-weight: 700;
+}
 .toast-out { opacity: 0; }
 
 /* ------------------------------------------------------------ Phones */
@@ -447,6 +520,9 @@ table.jobs { border-collapse: separate; border-spacing: 0; width: 100%; font-siz
   .drawer-head { padding: 12px 16px; }
   .drawer-body { padding: 8px 16px 40px; }
   .form-grid { grid-template-columns: 1fr; }
+  .project-row { grid-template-columns: 1fr; }
+  .project-row .remove-project { display: none; }
+  .projects.is-multi .project-row .remove-project { display: block; }
   .span-2 { grid-column: auto; }
   .modal { width: 100vw; max-width: 100vw; max-height: 100vh; height: 100vh; border-radius: 0; margin: 0; }
 }
