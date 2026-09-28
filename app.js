@@ -27,7 +27,8 @@
     { key: 'payment', label: 'Payment', track: true },
     { key: 'notes', label: 'Notes', kind: 'long' },
     { key: 'createdAt', label: 'Created At', kind: 'stamp' },
-    { key: 'updatedAt', label: 'Updated At', kind: 'stamp' }
+    { key: 'updatedAt', label: 'Updated At', kind: 'stamp' },
+    { key: 'order', label: 'Order #' }
   ];
   const LABEL = {};
   FIELDS.forEach((f) => { LABEL[f.key] = f.label; });
@@ -40,7 +41,9 @@
   const CHIP_TONE = {
     Approved: 'green', Received: 'green', Digitized: 'green', Finished: 'green', 'Paid in Full': 'green', Complete: 'green',
     Sent: 'amber', Ordered: 'amber', 'Sent to Customer': 'amber', Working: 'amber', Billed: 'amber',
-    Waiting: 'red',
+    'Being Designed': 'amber',
+    Waiting: 'red', 'On Hold': 'red',
+    'Not Sent': 'grey',
     'In Queue': 'blue', Active: 'blue', 'Pick-Up': 'blue', Ship: 'blue', Courier: 'blue',
     Dead: 'dead'
   };
@@ -63,7 +66,8 @@
     lastSync: null,
     syncError: null,
     drawerJob: null,
-    picker: null // { job, field }
+    picker: null, // { job, field }
+    newLinkTo: 0 // when adding a project to an existing order
   };
 
   const $ = (id) => document.getElementById(id);
@@ -74,6 +78,7 @@
     pickerBackdrop: $('picker-backdrop'), drawer: $('drawer'), drawerBackdrop: $('drawer-backdrop'),
     drawerBody: $('drawer-body'), drawerTitle: $('drawer-title'), drawerKicker: $('drawer-kicker'),
     newDialog: $('new-dialog'), newForm: $('new-form'), newError: $('new-error'), newSubmit: $('new-submit'),
+    newTitle: $('new-title'), newNote: $('new-note'), projects: $('projects'), customers: $('customer-list'),
     toasts: $('toasts')
   };
 
@@ -144,13 +149,90 @@
     return '';
   }
 
-  function toast(msg, kind) {
+  // sticky toasts stay until dismissed (used for "rest of the order is not ready" warnings).
+  function toast(msg, kind, sticky) {
     const t = document.createElement('div');
-    t.className = 'toast' + (kind ? ' toast-' + kind : '');
-    t.textContent = msg;
+    t.className = 'toast' + (kind ? ' toast-' + kind : '') + (sticky ? ' toast-sticky' : '');
+    t.setAttribute('role', kind === 'error' || kind === 'warn' ? 'alert' : 'status');
+    const text = document.createElement('span');
+    text.textContent = msg;
+    t.appendChild(text);
     el.toasts.appendChild(t);
+    if (sticky) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'toast-close';
+      b.textContent = 'Got it';
+      b.addEventListener('click', () => t.remove());
+      t.appendChild(b);
+      return;
+    }
     setTimeout(() => t.classList.add('toast-out'), kind === 'error' ? 5000 : 2800);
     setTimeout(() => t.remove(), kind === 'error' ? 5400 : 3200);
+  }
+
+  /* ------------------------------------------------------------ Orders (linked projects) */
+
+  // Projects that came in together share an Order # so nobody tells the customer
+  // it is ready while part of it is still in the works.
+  // A project counts as ready once Production is Finished or it is Complete. Dead ones drop out.
+  function isReady(j) {
+    return j.status === 'Complete' || j.production === 'Finished';
+  }
+
+  function orderOf(j) {
+    return j.order === '' || j.order == null || isNaN(Number(j.order)) ? 0 : Number(j.order);
+  }
+
+  // null when the job is on its own.
+  function orderInfo(j) {
+    const o = orderOf(j);
+    if (!o) return null;
+    const mates = state.jobs.filter((x) => x.job !== j.job && orderOf(x) === o);
+    if (!mates.length) return null;
+    const live = [j].concat(mates).filter((x) => x.status !== 'Dead');
+    return {
+      order: o,
+      mates: mates.sort((a, b) => a.job - b.job),
+      total: live.length,
+      ready: live.filter(isReady).length,
+      waiting: mates.filter((x) => x.status !== 'Dead' && !isReady(x))
+    };
+  }
+
+  function orderBadge(j) {
+    const info = orderInfo(j);
+    if (!info) return '';
+    const all = info.ready === info.total;
+    return '<button type="button" class="order-badge ' + (all ? 'order-ready' : 'order-waiting') +
+      '" data-order-filter="' + info.order + '" title="Show every project in this order">' +
+      'Order ' + info.order + ' - ' + (all ? 'all ' + info.total + ' ready' : info.ready + ' of ' + info.total + ' ready') +
+      '</button>';
+  }
+
+  function describe(j) {
+    return '#' + j.job + ' ' + j.type + (j.description ? ' (' + j.description + ')' : '');
+  }
+
+  // Called when a project is marked Finished or Complete.
+  function warnAboutOrder(job) {
+    const info = orderInfo(job);
+    if (!info) return;
+    if (info.waiting.length) {
+      toast('Heads up: ' + job.customer + ' has ' + info.waiting.length + ' more ' +
+        (info.waiting.length === 1 ? 'project' : 'projects') + ' in order ' + info.order + ' that ' +
+        (info.waiting.length === 1 ? 'is' : 'are') + ' not ready: ' + info.waiting.map(describe).join(', ') +
+        '. Do not tell the customer the order is ready yet.', 'warn', true);
+    } else {
+      toast('All ' + info.total + ' projects in order ' + info.order + ' are ready. OK to let ' + job.customer + ' know.', 'ok');
+    }
+  }
+
+  function mergeJobs(list) {
+    (list || []).forEach((saved) => {
+      const i = state.jobs.findIndex((j) => j.job === saved.job);
+      if (i >= 0) state.jobs[i] = applyPending(saved); else state.jobs.push(saved);
+    });
   }
 
   function allowed(job, field) {
@@ -248,6 +330,9 @@
     if (field === 'status' && CLOSED.includes(job.status) !== CLOSED.includes(old)) {
       toast('Job ' + job.job + (isClosed(job) ? ' moved to Closed' : ' reopened'));
     }
+    if ((field === 'production' && job.production === 'Finished') || (field === 'status' && job.status === 'Complete')) {
+      warnAboutOrder(job);
+    }
     if (state.drawerJob === job.job) syncDrawer();
   }
 
@@ -257,9 +342,6 @@
     el.field.innerHTML = '<option value="">Any field</option>' +
       TRACK.map((k) => '<option value="' + k + '">' + esc(LABEL[k]) + '</option>').join('');
     refreshFilterOptions();
-    const typeSelect = el.newForm.elements.type;
-    typeSelect.innerHTML = '<option value="">Choose...</option>' +
-      state.lists.types.map((t) => '<option>' + esc(t) + '</option>').join('');
   }
 
   function refreshFilterOptions() {
@@ -306,7 +388,13 @@
     }
     if (f.q) {
       const hay = [job.job, job.customer, job.description, job.contact].join(' ').toLowerCase();
-      if (!f.q.split(/\s+/).every((w) => hay.includes(w))) return false;
+      const ok = f.q.split(/\s+/).every((w) => {
+        // "#1002" means exactly job 1002 or anything in order 1002.
+        const exact = /^#(\d+)$/.exec(w);
+        if (exact) return job.job === Number(exact[1]) || orderOf(job) === Number(exact[1]);
+        return hay.includes(w);
+      });
+      if (!ok) return false;
     }
     return true;
   }
@@ -317,11 +405,23 @@
     const open = state.view === 'open';
     const list = state.jobs.filter((j) => (open ? !isClosed(j) : isClosed(j))).filter(matches);
     const dueKey = (j) => j.due || (open ? '9999-99-99' : '0000-00-00');
-    list.sort((a, b) => {
-      const c = dueKey(a).localeCompare(dueKey(b));
-      if (c) return open ? c : -c;
-      return open ? a.job - b.job : b.job - a.job;
+    // Keep an order's projects next to each other, placed by its most urgent one.
+    const lead = new Map();
+    list.forEach((j) => {
+      const o = orderOf(j);
+      if (!o) return;
+      const d = dueKey(j);
+      const cur = lead.get(o);
+      if (cur === undefined || (open ? d < cur : d > cur)) lead.set(o, d);
     });
+    const groupDue = (j) => (lead.has(orderOf(j)) ? lead.get(orderOf(j)) : dueKey(j));
+    const groupId = (j) => orderOf(j) || j.job;
+    const dir = open ? 1 : -1;
+    list.sort((a, b) =>
+      dir * groupDue(a).localeCompare(groupDue(b)) ||
+      dir * (groupId(a) - groupId(b)) ||
+      dir * dueKey(a).localeCompare(dueKey(b)) ||
+      dir * (a.job - b.job));
     return list;
   }
 
@@ -352,19 +452,19 @@
     const head = '<tr>' +
       '<th class="col-job sticky-1">Job #</th>' +
       '<th class="col-customer sticky-2">Customer</th>' +
-      '<th>Project Type</th><th class="col-desc">Description</th><th class="num">Qty</th><th>Due Date</th>' +
+      '<th>Project Type</th><th class="col-desc">Description</th><th>Due Date</th>' +
       TRACK.map((k) => '<th>' + esc(LABEL[k]) + '</th>').join('') + '</tr>';
 
     const rows = jobs.map((j) => {
       const dead = j.status === 'Dead' ? ' row-dead' : '';
-      return '<tr class="row' + dead + '" data-job="' + j.job + '">' +
+      const linked = orderInfo(j) ? ' row-linked' : '';
+      return '<tr class="row' + dead + linked + '" data-job="' + j.job + '">' +
         '<td class="col-job sticky-1">' + j.job + '</td>' +
         '<td class="col-customer sticky-2"><button type="button" class="open-job" data-open="' + j.job + '">' +
           esc(j.customer || '(no customer)') + '</button>' +
-          (j.contact ? '<span class="sub">' + esc(j.contact) + '</span>' : '') + '</td>' +
+          (j.contact ? '<span class="sub">' + esc(j.contact) + '</span>' : '') + orderBadge(j) + '</td>' +
         '<td class="col-type">' + esc(j.type) + '</td>' +
         '<td class="col-desc"><span class="clamp">' + esc(j.description) + '</span></td>' +
-        '<td class="num">' + esc(j.qty) + '</td>' +
         '<td class="col-due">' + dueCell(j) + '</td>' +
         TRACK.map((k) => '<td>' + chip(j, k) + '</td>').join('') +
         '</tr>';
@@ -376,14 +476,16 @@
     el.cards.innerHTML = jobs.map((j) => {
       const dead = j.status === 'Dead' ? ' card-dead' : '';
       const flag = dueFlag(j);
-      return '<article class="card' + dead + (flag ? ' card-' + flag : '') + '" data-job="' + j.job + '">' +
+      const linked = orderInfo(j) ? ' card-linked' : '';
+      return '<article class="card' + dead + linked + (flag ? ' card-' + flag : '') + '" data-job="' + j.job + '">' +
         '<button type="button" class="card-head open-job" data-open="' + j.job + '">' +
           '<span class="card-top"><span class="card-customer">' + esc(j.customer || '(no customer)') + '</span>' +
           '<span class="card-no">#' + j.job + '</span></span>' +
-          '<span class="card-meta">' + esc(j.type) + (j.qty !== '' ? ' - Qty ' + esc(j.qty) : '') + '</span>' +
+          '<span class="card-meta">' + esc(j.type) + '</span>' +
           (j.description ? '<span class="card-desc">' + esc(j.description) + '</span>' : '') +
           '<span class="card-due">Due ' + dueCell(j) + '</span>' +
         '</button>' +
+        (orderInfo(j) ? '<div class="card-order">' + orderBadge(j) + '</div>' : '') +
         '<div class="card-chips">' + TRACK.map((k) => chip(j, k, { showLabel: true })).join('') + '</div>' +
       '</article>';
     }).join('');
@@ -484,8 +586,9 @@
 
     el.drawerBody.innerHTML =
       '<div class="drawer-chips" id="drawer-chips"></div>' +
+      '<section class="drawer-order" id="drawer-order" aria-label="Linked projects"></section>' +
       '<h3 class="section-title">Job</h3>' +
-      '<div class="form-grid">' + group(['customer', 'type', 'dateIn', 'due', 'qty', 'description']) + '</div>' +
+      '<div class="form-grid">' + group(['customer', 'type', 'dateIn', 'due', 'description']) + '</div>' +
       '<h3 class="section-title">Tracking</h3>' +
       '<div class="form-grid">' + group(TRACK) + '</div>' +
       '<h3 class="section-title">Contact</h3>' +
@@ -524,9 +627,80 @@
       input.value = job[f.key] == null ? '' : job[f.key];
     });
     showDates(el.drawerBody, job);
+    const orderBox = $('drawer-order');
+    if (!orderBox.contains(document.activeElement) || force) orderBox.innerHTML = drawerOrder(job);
     $('drawer-stamps').textContent =
       (job.createdAt ? 'Created ' + fmtStamp(job.createdAt) : '') +
       (job.updatedAt ? (job.createdAt ? ' - ' : '') + 'Last changed ' + fmtStamp(job.updatedAt) : '');
+  }
+
+  function drawerOrder(job) {
+    const info = orderInfo(job);
+    const addBtn = '<button type="button" class="btn btn-ghost" data-act="add-to-order">' +
+      (info ? 'Add another project to this order' : 'Add another project for this customer') + '</button>';
+    if (info) {
+      const all = info.ready === info.total;
+      return '<div class="order-banner ' + (all ? 'order-ready' : 'order-waiting') + '">' +
+        '<strong>Order ' + info.order + ': ' + info.total + ' projects, ' +
+        (all ? 'all ready.' : info.ready + ' of ' + info.total + ' ready.') + '</strong> ' +
+        (all ? 'OK to let the customer know.' : 'Do not tell the customer it is ready until every project is.') +
+        '</div>' +
+        '<ul class="mates">' + info.mates.map((m) =>
+          '<li><button type="button" class="mate" data-mate="' + m.job + '">' +
+          '<span class="mate-name">#' + m.job + ' ' + esc(m.type) + (m.description ? ' - ' + esc(m.description) : '') + '</span>' +
+          '<span class="mate-state">' + esc(mateState(m)) + '</span></button></li>').join('') + '</ul>' +
+        '<div class="order-actions">' + addBtn +
+        '<button type="button" class="btn btn-ghost" data-act="unlink">Unlink this job</button></div>';
+    }
+    const others = state.jobs.filter((x) => x.job !== job.job && !isClosed(x));
+    const same = others.filter((x) => sameCustomer(x, job));
+    const rest = others.filter((x) => !sameCustomer(x, job));
+    const opt = (x) => '<option value="' + x.job + '">#' + x.job + ' ' + esc(x.customer) + ' - ' + esc(x.type) + '</option>';
+    return '<p class="order-solo">' + (same.length
+      ? '<strong>' + same.length + ' other open ' + (same.length === 1 ? 'job' : 'jobs') + ' for this customer, not linked.</strong> Link them if they were ordered together.'
+      : 'This job is on its own.') + '</p>' +
+      '<div class="order-actions">' + addBtn +
+      (others.length ? '<label class="link-pick">Link to' +
+        '<select class="input" data-act="link"><option value="">Choose a job...</option>' +
+        (same.length ? '<optgroup label="Same customer">' + same.map(opt).join('') + '</optgroup>' : '') +
+        (rest.length ? '<optgroup label="Other open jobs">' + rest.map(opt).join('') + '</optgroup>' : '') +
+        '</select></label>' : '') + '</div>';
+  }
+
+  function mateState(m) {
+    if (m.status === 'Dead') return 'Dead';
+    if (isReady(m)) return 'Ready';
+    return [m.status !== 'Active' ? m.status : '', m.production ? 'Production: ' + m.production : 'Not started',
+      m.artwork ? 'Artwork: ' + m.artwork : ''].filter(Boolean).join(' - ');
+  }
+
+  function sameCustomer(a, b) {
+    return String(a.customer).trim().toLowerCase() === String(b.customer).trim().toLowerCase();
+  }
+
+  async function linkTo(jobNo, to) {
+    try {
+      const jobs = await window.API.linkJob(jobNo, to);
+      mergeJobs(jobs);
+      render();
+      if (state.drawerJob === jobNo) { syncDrawer(true); loadActivity(jobNo); }
+      toast('Job ' + jobNo + ' linked to order ' + orderOf(findJob(jobNo)));
+    } catch (err) {
+      toast('Could not link job ' + jobNo + ': ' + (err.message || err), 'error');
+      if (state.drawerJob === jobNo) syncDrawer(true);
+    }
+  }
+
+  function onDrawerOrderClick(e) {
+    const mate = e.target.closest('[data-mate]');
+    if (mate) { openDrawer(Number(mate.dataset.mate)); return; }
+    const act = e.target.closest('[data-act]');
+    if (!act || state.drawerJob == null) return;
+    const job = findJob(state.drawerJob);
+    if (act.dataset.act === 'add-to-order') openNew(job);
+    if (act.dataset.act === 'unlink') {
+      setField(job.job, 'order', '').then((ok) => { if (ok) { syncDrawer(true); toast('Job ' + job.job + ' unlinked'); } });
+    }
   }
 
   // Date inputs follow the browser's locale, so spell the date out Day Month Year beside them.
@@ -570,6 +744,10 @@
 
   function onDrawerChange(e) {
     const input = e.target;
+    if (input.dataset.act === 'link') {
+      if (input.value) linkTo(state.drawerJob, Number(input.value));
+      return;
+    }
     const field = input.dataset.field;
     if (!field || state.drawerJob == null) return;
     const jobNo = state.drawerJob;
@@ -587,52 +765,124 @@
 
   /* ------------------------------------------------------------ New job */
 
-  function openNew() {
+  // from: an existing job when adding another project to its order (or starting one).
+  function openNew(from) {
     el.newForm.reset();
     el.newForm.elements.dateIn.value = todayIso();
+    el.projects.innerHTML = '';
+    addProjectRow();
+    state.newLinkTo = 0;
+    el.newTitle.textContent = 'New Job';
+    el.newNote.hidden = true;
+    el.customers.innerHTML = customerNames().map((c) => '<option value="' + esc(c) + '">').join('');
+    if (from && from.job) {
+      state.newLinkTo = orderOf(from) || from.job;
+      const f = el.newForm.elements;
+      ['customer', 'due', 'contact', 'phone', 'email'].forEach((k) => { f[k].value = from[k] || ''; });
+      el.newTitle.textContent = orderOf(from) ? 'Add to Order ' + state.newLinkTo : 'Add a Linked Project';
+      el.newNote.textContent = 'This project will be linked with ' +
+        [from].concat(orderInfo(from) ? orderInfo(from).mates : []).map((j) => '#' + j.job).join(', ') + '.';
+      el.newNote.hidden = false;
+    }
     showDates(el.newForm);
     el.newError.hidden = true;
     el.newSubmit.disabled = false;
-    el.newSubmit.textContent = 'Create Job';
+    updateSubmitLabel();
     el.newDialog.showModal();
-    el.newForm.elements.customer.focus();
+    (from ? el.projects.querySelector('select') : el.newForm.elements.customer).focus();
+  }
+
+  function customerNames() {
+    const seen = new Map();
+    state.jobs.slice().sort((a, b) => b.job - a.job).forEach((j) => {
+      const k = String(j.customer).trim().toLowerCase();
+      if (k && !seen.has(k)) seen.set(k, j.customer.trim());
+    });
+    return [...seen.values()].sort((a, b) => a.localeCompare(b));
+  }
+
+  // Picking a known customer fills in their contact details from their latest job.
+  function fillKnownCustomer() {
+    const f = el.newForm.elements;
+    const name = f.customer.value.trim().toLowerCase();
+    if (!name) return;
+    const last = state.jobs.filter((j) => String(j.customer).trim().toLowerCase() === name).sort((a, b) => b.job - a.job)[0];
+    if (!last) return;
+    ['contact', 'phone', 'email'].forEach((k) => { if (!f[k].value && last[k]) f[k].value = last[k]; });
+  }
+
+  function addProjectRow() {
+    const n = el.projects.children.length + 1;
+    const row = document.createElement('div');
+    row.className = 'project-row';
+    row.innerHTML =
+      '<label class="field">Project Type <span class="req">required</span>' +
+        '<select class="input" name="type" aria-label="Project type for project ' + n + '"><option value="">Choose...</option>' +
+        state.lists.types.map((t) => '<option>' + esc(t) + '</option>').join('') + '</select></label>' +
+      '<label class="field">What is it?' +
+        '<input class="input" name="description" autocomplete="off" placeholder="e.g. 24 hats, left-front logo"></label>' +
+      '<button type="button" class="btn btn-ghost remove-project" aria-label="Remove project ' + n + '">Remove</button>';
+    el.projects.appendChild(row);
+    updateSubmitLabel();
+    return row;
+  }
+
+  function updateSubmitLabel() {
+    const rows = el.projects.children.length;
+    el.projects.classList.toggle('is-multi', rows > 1);
+    el.newSubmit.textContent = rows > 1 ? 'Create ' + rows + ' Linked Jobs' : 'Create Job';
   }
 
   async function submitNew(e) {
     e.preventDefault();
     const form = el.newForm.elements;
-    const data = {};
-    ['customer', 'type', 'due', 'dateIn', 'qty', 'description', 'contact', 'phone', 'email', 'notes'].forEach((k) => {
+    const shared = {};
+    ['customer', 'due', 'dateIn', 'contact', 'phone', 'email', 'notes'].forEach((k) => {
       const v = form[k].value.trim();
-      if (v !== '') data[k] = k === 'qty' ? Number(v) : v;
+      if (v !== '') shared[k] = v;
     });
-    const missing = REQUIRED.filter((k) => !data[k]);
+    const rows = [...el.projects.querySelectorAll('.project-row')].map((r) => ({
+      type: r.querySelector('select').value,
+      description: r.querySelector('input').value.trim(),
+      el: r
+    }));
+    const missing = [];
+    if (!shared.customer) missing.push('Customer');
+    if (!shared.due) missing.push('Due Date');
+    const noType = rows.filter((r) => !r.type);
+    if (noType.length) missing.push('Project Type');
     if (missing.length) {
-      el.newError.textContent = 'Please fill in: ' + missing.map((k) => LABEL[k]).join(', ') + '.';
+      el.newError.textContent = 'Please fill in: ' + missing.join(', ') + '.';
       el.newError.hidden = false;
-      form[missing[0]].focus();
+      (!shared.customer ? form.customer : !shared.due ? form.due : noType[0].el.querySelector('select')).focus();
       return;
     }
-    data.status = 'Active';
+    const list = rows.map((r) => Object.assign({}, shared, { type: r.type, description: r.description }));
     el.newSubmit.disabled = true;
     el.newSubmit.textContent = 'Saving...';
     try {
-      const job = await window.API.createJob(data);
-      state.jobs.push(job);
+      const linkTo = state.newLinkTo;
+      const jobs = await window.API.createJobs(list, linkTo);
+      mergeJobs(jobs);
       el.newDialog.close();
       if (state.view !== 'open') setView('open');
       render();
-      toast('Job ' + job.job + ' created for ' + job.customer);
-      const row = document.querySelector('.row[data-job="' + job.job + '"], .card[data-job="' + job.job + '"]');
-      if (row && row.offsetParent) {
-        row.scrollIntoView({ block: 'center' });
-        row.classList.add('flash');
-      }
+      if (linkTo) toast('Job ' + jobs.map((j) => j.job).join(', ') + ' added to order ' + linkTo);
+      else if (jobs.length > 1) toast(jobs.length + ' linked jobs created for ' + jobs[0].customer + ' (order ' + jobs[0].order + ')');
+      else toast('Job ' + jobs[0].job + ' created for ' + jobs[0].customer);
+      if (linkTo) refresh(); // the job we linked to may have just been given its Order #
+      jobs.forEach((job) => {
+        const row = [...document.querySelectorAll('.row[data-job="' + job.job + '"], .card[data-job="' + job.job + '"]')].find((n) => n.offsetParent);
+        if (row) row.classList.add('flash');
+      });
+      const first = [...document.querySelectorAll('[data-job="' + jobs[0].job + '"]')].find((n) => n.offsetParent);
+      if (first) first.scrollIntoView({ block: 'center' });
+      if (state.drawerJob != null) syncDrawer(true);
     } catch (err) {
       el.newError.textContent = 'Could not create job: ' + (err.message || err);
       el.newError.hidden = false;
       el.newSubmit.disabled = false;
-      el.newSubmit.textContent = 'Create Job';
+      updateSubmitLabel();
     }
   }
 
@@ -675,7 +925,15 @@
 
   function bind() {
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
-    $('new-btn').addEventListener('click', openNew);
+    $('new-btn').addEventListener('click', () => openNew());
+    $('add-project').addEventListener('click', () => { addProjectRow().querySelector('select').focus(); });
+    el.projects.addEventListener('click', (e) => {
+      const b = e.target.closest('.remove-project');
+      if (!b || el.projects.children.length < 2) return;
+      b.closest('.project-row').remove();
+      updateSubmitLabel();
+    });
+    el.newForm.elements.customer.addEventListener('change', fillKnownCustomer);
     $('new-cancel').addEventListener('click', () => el.newDialog.close());
     $('export-btn').addEventListener('click', exportCsv);
     el.newForm.addEventListener('submit', submitNew);
@@ -696,6 +954,14 @@
 
     // One listener for rows, cards and chips.
     $('main').addEventListener('click', (e) => {
+      const of = e.target.closest('[data-order-filter]');
+      if (of) {
+        e.stopPropagation();
+        el.search.value = '#' + of.dataset.orderFilter;
+        readFilters();
+        render();
+        return;
+      }
       const c = e.target.closest('[data-chip]');
       if (c) {
         e.stopPropagation();
@@ -718,6 +984,7 @@
     el.pickerBackdrop.addEventListener('click', closePicker);
 
     el.drawerBody.addEventListener('change', onDrawerChange);
+    el.drawerBody.addEventListener('click', (e) => { if (e.target.closest('#drawer-order')) onDrawerOrderClick(e); });
     el.drawerBody.addEventListener('input', (e) => {
       const n = e.target.dataset.field && el.drawerBody.querySelector('[data-says="' + e.target.dataset.field + '"]');
       if (n) showDates(n.parentNode, { [e.target.dataset.field]: e.target.value });

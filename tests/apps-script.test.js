@@ -41,14 +41,30 @@ test('setup adds tabs, tracking columns and open-ended views; safe to re-run', (
   const log = ss.sheets['Job Log'];
   assert.equal(log.get(1, 19), 'Created At');
   assert.equal(log.get(1, 20), 'Updated At');
+  assert.equal(log.get(1, 21), 'Order #');
   assert.deepEqual(ss.sheets.Activity.data[0], ['Timestamp', 'Job #', 'Field', 'Old Value', 'New Value']);
   assert.equal(ss.sheets['Options By Type'].get(2, 2), 'Digitized');
-  assert.match(ss.sheets['Open Jobs'].formulas['4,1'], /'Job Log'!A2:R,'Job Log'!K2:K="Active"/);
   assert.doesNotMatch(ss.sheets['Closed Jobs'].formulas['4,1'], /500/);
   assert.equal(log.formats['2,2'], 'dd mmm yyyy');
 
+  // New options slot in next to their neighbours
+  const lists = get().lists.options;
+  assert.deepEqual(lists.status, ['Active', 'On Hold', 'Complete', 'Dead']);
+  assert.deepEqual(lists.estimate, ['Not Sent', 'Sent', 'Approved']);
+  assert.deepEqual(lists.artwork, ['Being Designed', 'Sent to Customer', 'Approved', 'Digitized']);
+  assert.deepEqual(get().lists.types.length, 12, 'project types untouched');
+  // On Hold jobs show on the sheet's Open Jobs tab
+  assert.equal(ss.sheets['Open Jobs'].formulas['4,1'],
+    "=IFERROR(SORT(FILTER('Job Log'!A2:R,('Job Log'!K2:K=\"Active\")+('Job Log'!K2:K=\"On Hold\")),3,TRUE),\"No jobs here yet\")");
+  // Dropdowns read whole Lists columns and only warn on other values
+  const status = log.validations.find((v) => v.col === 11);
+  assert.equal(status.rule.allowInvalid, true);
+  assert.equal(status.rule.range.col, 2);
+  assert.equal(status.rule.range.row, 3);
+
   gs.setup();
-  assert.equal(log.get(1, 21), '', 'no duplicate columns on re-run');
+  assert.equal(log.get(1, 22), '', 'no duplicate columns on re-run');
+  assert.deepEqual(get().lists.options.status, ['Active', 'On Hold', 'Complete', 'Dead'], 'options not duplicated');
   assert.equal(ss.sheets['Options By Type'].getLastRow(), 2, 'seed rule not duplicated');
 
   const rules = get().rules;
@@ -62,6 +78,8 @@ test('create assigns the next Job #, defaults, and logs activity', () => {
   assert.equal(res.ok, true, res.error);
   assert.equal(res.job.job, 1004);
   assert.equal(res.job.status, 'Active');
+  assert.equal(res.job.estimate, 'Not Sent', 'estimate starts as Not Sent');
+  assert.equal(res.job.order, '', 'a single job is not linked');
   assert.equal(res.job.due, '2026-10-01');
   assert.equal(res.job.qty, 12);
   assert.equal(res.job.notes, '=1+1');
@@ -127,4 +145,48 @@ test('appendActivity writes a row', () => {
   const { post, get } = setupEnv();
   assert.equal(post({ action: 'appendActivity', job: 1001, field: 'Note', oldValue: '', newValue: 'Called customer' }).ok, true);
   assert.equal(get({ action: 'activity', job: 1001 }).activity[0].newValue, 'Called customer');
+});
+
+test('create with several projects links them under the first job number', () => {
+  const { post, get } = setupEnv();
+  const res = post({ action: 'create', jobs: [
+    { customer: 'Main St Coffee', type: 'Embroidery - Hats', due: '2026-10-10', description: 'Hats' },
+    { customer: 'Main St Coffee', type: 'Vinyl - Signage', due: '2026-10-10', description: 'Banner' },
+    { customer: 'Main St Coffee', type: 'Promo', due: '2026-10-10', description: 'Golf balls' }
+  ] });
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(res.jobs.map((j) => [j.job, j.order]), [[1004, 1004], [1005, 1004], [1006, 1004]]);
+  assert.equal(get().jobs.filter((j) => j.order === 1004).length, 3);
+});
+
+test('create is all or nothing when one project is missing a required field', () => {
+  const { post, get } = setupEnv();
+  const res = post({ action: 'create', jobs: [
+    { customer: 'A', type: 'Promo', due: '2026-10-10' },
+    { customer: 'A', due: '2026-10-10' }
+  ] });
+  assert.match(res.error, /Project Type is required/);
+  assert.equal(get().jobs.length, 3);
+});
+
+test('create with linkTo joins an existing job, giving it an Order # first', () => {
+  const { post, get } = setupEnv();
+  const res = post({ action: 'create', linkTo: 1002, jobs: [{ customer: 'SAMPLE - Main St Coffee', type: 'Promo', due: '2026-10-01' }] });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.job.order, 1002);
+  assert.equal(get().jobs.find((j) => j.job === 1002).order, 1002);
+});
+
+test('link and unlink existing jobs', () => {
+  const { post, get } = setupEnv();
+  let res = post({ action: 'link', job: 1001, to: 1002 });
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(res.jobs.map((j) => [j.job, j.order]), [[1002, 1002], [1001, 1002]]);
+  res = post({ action: 'link', job: 1003, to: 1001 });
+  assert.equal(res.jobs[1].order, 1002, 'joins the existing order, not a new one');
+  post({ action: 'update', job: 1003, field: 'order', value: '' });
+  assert.equal(get().jobs.find((j) => j.job === 1003).order, '');
+  assert.match(post({ action: 'link', job: 1001, to: 1001 }).error, /itself/);
+  const act = get({ action: 'activity', job: 1001 }).activity;
+  assert.deepEqual([act[0].field, act[0].newValue], ['Order #', '1002']);
 });

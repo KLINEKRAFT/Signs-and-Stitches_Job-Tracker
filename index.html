@@ -77,40 +77,41 @@
         <h2 id="new-title">New Job</h2>
         <button class="btn btn-ghost" type="button" id="new-cancel">Cancel</button>
       </div>
+      <p class="new-note" id="new-note" hidden></p>
       <div class="form-grid">
         <label class="field span-2">Customer <span class="req">required</span>
-          <input class="input" name="customer" required autocomplete="off">
+          <input class="input" name="customer" required autocomplete="off" list="customer-list">
+          <datalist id="customer-list"></datalist>
         </label>
-        <label class="field">Project Type <span class="req">required</span>
-          <select class="input" name="type" required><option value="">Choose...</option></select>
-        </label>
-        <label class="field">Due Date <span class="req">required</span>
+        <label class="field span-2">Due Date <span class="req">required</span>
           <span class="date-says" data-says="due"></span>
           <input class="input" type="date" name="due" required>
         </label>
-        <label class="field">Date In
-          <span class="date-says" data-says="dateIn"></span>
-          <input class="input" type="date" name="dateIn">
-        </label>
-        <label class="field">Qty
-          <input class="input" type="number" name="qty" min="0" inputmode="numeric">
-        </label>
-        <label class="field span-2">Description
-          <input class="input" name="description" autocomplete="off">
-        </label>
-        <label class="field">Contact Name
-          <input class="input" name="contact" autocomplete="off">
-        </label>
-        <label class="field">Phone
-          <input class="input" type="tel" name="phone" autocomplete="off">
-        </label>
-        <label class="field span-2">Email
-          <input class="input" type="email" name="email" autocomplete="off">
-        </label>
-        <label class="field span-2">Notes
-          <textarea class="input" name="notes" rows="2"></textarea>
-        </label>
       </div>
+      <div class="projects" id="projects"></div>
+      <button class="btn btn-ghost add-project" type="button" id="add-project">+ Add another project for this customer</button>
+      <p class="hint">Ordered several things at once, like hats, a banner and golf balls? Add each one here. They are linked as one order, so nobody tells the customer it is ready until every piece is done.</p>
+      <details class="more">
+        <summary>More details (optional)</summary>
+        <div class="form-grid">
+          <label class="field">Date In
+            <span class="date-says" data-says="dateIn"></span>
+            <input class="input" type="date" name="dateIn">
+          </label>
+          <label class="field">Contact Name
+            <input class="input" name="contact" autocomplete="off">
+          </label>
+          <label class="field">Phone
+            <input class="input" type="tel" name="phone" autocomplete="off">
+          </label>
+          <label class="field">Email
+            <input class="input" type="email" name="email" autocomplete="off">
+          </label>
+          <label class="field span-2">Notes
+            <textarea class="input" name="notes" rows="2"></textarea>
+          </label>
+        </div>
+      </details>
       <p class="form-error" id="new-error" role="alert" hidden></p>
       <div class="modal-foot">
         <button class="btn btn-primary btn-wide" type="submit" id="new-submit">Create Job</button>

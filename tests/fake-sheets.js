@@ -30,6 +30,7 @@ class FakeRange {
   clearContent() { this.cells((r, c) => this.sheet.set(r, c, '')); return this; }
   setFontWeight() { return this; }
   copyTo(target) { this.sheet.copies.push([this.row, target.row, target.rows]); }
+  setDataValidation(rule) { this.sheet.validations.push({ row: this.row, col: this.col, rows: this.rows, rule }); return this; }
 }
 
 class FakeSheet {
@@ -39,6 +40,7 @@ class FakeSheet {
     this.formats = {};
     this.formulas = {};
     this.copies = [];
+    this.validations = [];
     this.maxRows = 1000;
   }
   get(r, c) { const row = this.data[r - 1]; return row && row[c - 1] !== undefined ? row[c - 1] : ''; }
@@ -86,6 +88,15 @@ function loadCodeGs(spreadsheet) {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => spreadsheet,
       flush: () => {},
+      newDataValidation: () => {
+        const rule = {};
+        const b = {
+          requireValueInRange: (range, show) => { rule.range = range; rule.show = show; return b; },
+          setAllowInvalid: (v) => { rule.allowInvalid = v; return b; },
+          build: () => rule
+        };
+        return b;
+      },
       CopyPasteType: { PASTE_DATA_VALIDATION: 'PASTE_DATA_VALIDATION' }
     },
     LockService: {
