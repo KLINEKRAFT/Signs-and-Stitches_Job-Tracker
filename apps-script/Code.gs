@@ -65,9 +65,11 @@ var FIELDS = [
   ['createdAt', 'Created At', 'stamp'],
   ['updatedAt', 'Updated At', 'stamp'],
   // Jobs that came in together share an Order # (the first job's number). Blank = on its own.
-  ['order', 'Order #', 'number']
+  ['order', 'Order #', 'number'],
+  // Links to art and proof files, one per line.
+  ['files', 'Files', 'text']
 ];
-var ADDED_COLUMNS = ['Created At', 'Updated At', 'Order #'];
+var ADDED_COLUMNS = ['Created At', 'Updated At', 'Order #', 'Files'];
 var READ_ONLY = { job: true, createdAt: true, updatedAt: true };
 var REQUIRED = { customer: 'Customer', type: 'Project Type', due: 'Due Date' };
 
@@ -175,7 +177,7 @@ function fieldByHeader_(header) {
   return null;
 }
 
-/** Map of header text -> 1-based column in the Job Log. Adds Created At / Updated At / Order # if missing. */
+/** Map of header text -> 1-based column in the Job Log. Adds any missing ADDED_COLUMNS at the end. */
 function jobColumns_(sh) {
   var lastCol = Math.max(sh.getLastColumn(), 1);
   var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];

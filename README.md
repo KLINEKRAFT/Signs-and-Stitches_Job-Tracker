@@ -1,6 +1,6 @@
-# Signs & Stitches Job Tracker
+# Signs & Stitches Production Board
 
-A simple, shared job tracker for **Signs & Stitches** (110 N Garfield Ave, Sand Springs, OK). It works on the shop PC, laptops and phones.
+A simple, shared job tracker (the Production Board) for **Signs & Stitches** (110 N Garfield Ave, Sand Springs, OK). It works on the shop PC, laptops and phones.
 
 The Google Sheet **"Signs & Stitches - Job Tracker"** is the database. The web page reads and writes it through a small Google Apps Script. The owner can work in the sheet or in the web page, and both always show the same jobs.
 
@@ -24,6 +24,7 @@ Browser (index.html + app.js)  --api.js-->  Apps Script web app (Code.gs)  -->  
 | `scripts/vercel-build.js` | Vercel build: copies the files to `dist/` and writes `config.js` from `API_URL` |
 | `tests/` | Backend tests (against a fake sheet) and browser tests (Playwright) |
 | `reference/` | The owner's sheet (`.xlsx` export) and the logo |
+| `wordmark.png`, `logo.png`, `favicon.png` | Header wordmark (cut from the logo) and icons |
 
 ## 1. Set up the Google Sheet backend (Apps Script)
 
@@ -36,7 +37,7 @@ Do this once, signed in as the Google account that owns the sheet.
 5. **Run setup once.** In the toolbar's function dropdown, pick **`setup`**, then click **Run**.
    - Google asks for permission. Click **Review permissions**, pick the account, then **Advanced > Go to (project name) (unsafe) > Allow**. This is normal for your own scripts.
    - `setup` does the following (it's safe to run again later):
-     - Adds **Created At**, **Updated At** and **Order #** columns to **Job Log**, after Notes (columns S, T and U).
+     - Adds **Created At**, **Updated At**, **Order #** and **Files** columns to **Job Log**, after Notes (columns S to V).
      - Adds an **Activity** tab (Timestamp, Job #, Field, Old Value, New Value).
      - Adds an **Options By Type** tab with the Digitized rule (see below).
      - Makes the **Open Jobs** and **Closed Jobs** views cover every row. The old formulas stopped at row 500. Open Jobs also shows **On Hold** jobs. Nothing else about those tabs changes.
@@ -76,15 +77,28 @@ The build only copies the app files into `dist/`, so the Apps Script source, tes
 
 ## Using it
 
-- **Open Jobs** (the default) shows Active and On Hold jobs, soonest due first.
-  - Tap a colored chip to change it. It saves right away, with no Save button. If a save fails, the chip goes back to its old value and a red message appears.
-  - Chip colors: **green** = done, **amber** = in progress (including Being Designed), **red** = blocked (Waiting, On Hold), **blue** = neutral, **grey** = Not Sent, **grey outline** = not set.
+The board has four parts: summary cards, filters, the job list, and a job panel that opens beside the list.
+
+- **Summary cards** (top): **Open Jobs**, **Needs Attention** (something Waiting, On Hold, or overdue), **Due Today**, and **Ready for Pickup** (Production Finished but not yet Complete). Tap a card to show just those jobs; tap it again to show everything.
+- **Filters:** category buttons (**Embroidery, Screen Print, Signs, Vehicle, Promo**, plus **Other** for any project type that fits none of those), **Sort** (due date, job #, customer, last changed) and **All Fields** (for example "Material is Waiting"). **Search** finds customer, job # or description; press **Ctrl K** (or **/**) to jump to it. Type `#1002` to see job 1002 and everything linked to it.
+- **Job list** (a table on computers, cards on phones), soonest due first:
+  - **Stage** shows the five steps a job moves through: **Estimate, Material, Artwork, Production, Delivery**. Filled dots are done, the ringed dot is the step it's on, grey dots haven't started. The color says how the job is doing: **green** on track, **amber** due within 3 days, **red** overdue or on hold. Tap any dot to change that step.
+  - A step counts as done at its last option: Estimate **Approved**, Material **Received**, Artwork **Approved** (or **Digitized** for embroidery), Production **Finished**. Delivery is done when the job is marked **Complete**.
+  - **Status** shows where the job is right now, e.g. "Working", "Being Designed", "Waiting", "On Hold" or "Ready for Pickup". Tap it to change that step.
+  - Changes save right away, with no Save button. If a save fails, the change is undone and a red message appears.
   - Due dates turn **red** when overdue and **amber** when due within 3 days.
-  - Search by customer, job # or description. Type `#1002` to see job 1002 and everything linked to it. Filter by project type, or by any tracking field ("Material = Waiting", "Status = On Hold", ...).
-  - Tap a customer name (or a card on a phone) to open the job detail.
-- **Closed** shows Complete and Dead jobs together, newest due date first, matching the sheet's Closed Jobs tab. Dead jobs are shown with a black DEAD chip. Nothing is ever deleted. To reopen a job, set its Status back to **Active**.
-- **Job detail** has every field, editable. A field saves when you leave it. The bottom of the panel shows the activity log (what changed and when).
+  - The **three dots** under a job number open quick actions: mark the next step, put on hold, mark complete, or mark dead (quote lost).
+  - **Tick the boxes** to act on several jobs at once: **Mark Next Step** or **Set Status**.
+- **Job panel** (tap a job): customer and contact (phone and email are tappable), then:
+  - **Mark Next Step** moves the job one step along (the hint underneath says what it will do). The arrow next to it lets you pick any step, Payment or Status.
+  - **Edit Job** shows every field for editing. Each field saves when you leave it.
+  - Tabs: **Details** (project info, the linked order, production progress with the date each step was finished, due date, notes), **Files** (links to art and proofs, e.g. Google Drive), **Notes**, and **History** (every change and when).
+  - On a wide screen the panel sits to the right of the list; on smaller screens it slides over it.
+- **Completed** (second tab) shows Complete and Dead jobs, newest due date first. Nothing is ever deleted. To reopen a job, set its Status back to **Active**.
 - **New Job**: Customer, Due Date and Project Type, plus an optional "What is it?" line. That's all. Date In (defaults to today), contact details and notes are tucked under "More details". Picking a customer you've had before fills in their contact details. Estimate starts as **Not Sent**. There's no Qty; this is a status tracker, not an order form. (The Qty column stays in the sheet, untouched.) Job numbers count up from 1001.
+- **The ... menu** (top right) has **Export CSV**, which downloads every job as a backup.
+- Every open screen refreshes every 20 seconds, and again as soon as you switch back to the tab.
+- Dates are shown Day Month Year (`27 Sep 2026`).
 
 ### Several projects for one customer (orders)
 
@@ -96,8 +110,6 @@ Customers often order several things at once, like hats, a vinyl banner and golf
 - **The warning:** when someone sets Production to Finished or Status to Complete on part of an order, a yellow message stays on screen until they tap **Got it**. It lists exactly which projects aren't ready yet. When the last one is done, it says it's OK to let the customer know.
 - **In the job panel:** the top shows the rest of the order and where each piece stands. Tap one to jump to it. You can **Add another project to this order** later (customer and contact are filled in for you), or **Unlink this job**. A job on its own can be **linked to** another job; other open jobs for the same customer are listed first, with a note if there are any.
 - **In the sheet**, linked jobs share the same number in the **Order #** column (U). You can also type or clear it there.
-- **Export CSV** downloads every job as a backup (desktop and laptop only).
-- Every open screen refreshes every 20 seconds, and again as soon as you switch back to the tab.
 
 ## Editing options and per-type rules (in the sheet)
 
@@ -124,13 +136,14 @@ npm test
 ```
 
 - `tests/apps-script.test.js` runs `Code.gs` against an in-memory copy of the owner's sheet. It covers reads, create (single, several linked, add to an order), link/unlink, update-by-Job #, activity, setup (including the new options and On Hold view) and bad input.
-- `tests/ui.test.js` drives the real page in Chromium (Playwright). It covers chips and colors, the new options, the Digitized rule, optimistic save and rollback, the drawer, new job (single and several projects), orders (badges, the not-ready warning, adding, unlinking and linking), filters, Closed and reopening, CSV export, the phone layout (cards, bottom-sheet picker, 44px tap targets), and a remote-mode run where the browser talks to `Code.gs` using `text/plain` POSTs. It's skipped if Playwright isn't installed.
+- `tests/ui.test.js` drives the real page in Chromium (Playwright). It covers the summary cards, category filters, the stage stepper and status colors, the Digitized rule, optimistic save and rollback, the job panel (Mark Next Step, editing, files, notes, history), the row menu, bulk actions, search/sort/field filters, new job (single and several projects), orders (badges, the not-ready warning, adding, unlinking and linking), Completed and reopening, CSV export, the docked and slide-over panel, the phone layout (cards, bottom-sheet picker, 44px tap targets), and a remote-mode run where the browser talks to `Code.gs` using `text/plain` POSTs. It's skipped if Playwright isn't installed.
 
 ## Open Questions (for the owner)
 
 1. **Per-type options:** which other project types need their own options? For example, screen print (screens burned, test print?), vinyl (weeded, transfer taped?), leather work, and so on. Only "Digitized = Embroidery only" is set up so far.
 2. **Password protection:** the page is unprotected right now. Anyone with the link can view and change jobs. Do you want one shared shop password, or separate staff logins (which would also record *who* made each change in the activity log)?
 3. **Customer notifications:** should customers get a text or email when a job is ready for pickup?
-4. **Art and proof files:** should art and proof files be attached to jobs (for example, linked from Google Drive)?
+4. **Art and proof files:** jobs can now hold links (Files tab). Is that enough, or do you want uploads straight from the app into a Google Drive folder?
 5. **Closed order:** Closed jobs are sorted newest due date first, the same as the sheet's Closed Jobs tab. Would you rather see the most recently *closed* jobs first?
 6. **What counts as "ready" in an order:** right now a project is ready when Production is **Finished** (or Status is Complete). Is that the moment you'd call the customer, or should it wait for something else, like Payment?
+7. **Vehicle lettering:** the **Vehicle** filter needs a project type with "Vehicle" in its name (for example "Vinyl - Vehicle"), and there isn't one in the Lists tab yet. Add one if you want vehicle jobs counted there.
