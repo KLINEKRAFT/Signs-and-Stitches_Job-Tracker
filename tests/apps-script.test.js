@@ -42,6 +42,7 @@ test('setup adds tabs, tracking columns and open-ended views; safe to re-run', (
   assert.equal(log.get(1, 19), 'Created At');
   assert.equal(log.get(1, 20), 'Updated At');
   assert.equal(log.get(1, 21), 'Order #');
+  assert.equal(log.get(1, 22), 'Files');
   assert.deepEqual(ss.sheets.Activity.data[0], ['Timestamp', 'Job #', 'Field', 'Old Value', 'New Value']);
   assert.equal(ss.sheets['Options By Type'].get(2, 2), 'Digitized');
   assert.doesNotMatch(ss.sheets['Closed Jobs'].formulas['4,1'], /500/);
@@ -63,7 +64,7 @@ test('setup adds tabs, tracking columns and open-ended views; safe to re-run', (
   assert.equal(status.rule.range.row, 3);
 
   gs.setup();
-  assert.equal(log.get(1, 22), '', 'no duplicate columns on re-run');
+  assert.equal(log.get(1, 23), '', 'no duplicate columns on re-run');
   assert.deepEqual(get().lists.options.status, ['Active', 'On Hold', 'Complete', 'Dead'], 'options not duplicated');
   assert.equal(ss.sheets['Options By Type'].getLastRow(), 2, 'seed rule not duplicated');
 
@@ -189,4 +190,12 @@ test('link and unlink existing jobs', () => {
   assert.match(post({ action: 'link', job: 1001, to: 1001 }).error, /itself/);
   const act = get({ action: 'activity', job: 1001 }).activity;
   assert.deepEqual([act[0].field, act[0].newValue], ['Order #', '1002']);
+});
+
+test('files links are stored as plain text', () => {
+  const { gs, post } = setupEnv();
+  gs.setup();
+  const res = post({ action: 'update', job: 1001, field: 'files', value: 'https://drive.google.com/a\nhttps://example.com/b' });
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.job.files, 'https://drive.google.com/a\nhttps://example.com/b');
 });

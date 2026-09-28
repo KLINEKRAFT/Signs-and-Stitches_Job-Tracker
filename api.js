@@ -60,7 +60,7 @@
 
   /* ------------------------------------------------------------ Demo mode */
 
-  const DEMO_KEY = 'sns-job-tracker-demo-v2';
+  const DEMO_KEY = 'sns-job-tracker-demo-v3';
   const REQUIRED = { customer: 'Customer', type: 'Project Type', due: 'Due Date' };
   const NEW_JOB_DEFAULTS = { status: 'Active', estimate: 'Not Sent' };
 
@@ -75,7 +75,7 @@
     const job = (o) => Object.assign({
       job: 0, dateIn: '', due: '', customer: '', contact: '', phone: '', email: '', type: '', description: '',
       qty: '', status: 'Active', estimate: '', material: '', artwork: '', production: '', delivery: '',
-      payment: '', notes: '', createdAt: now, updatedAt: now, order: ''
+      payment: '', notes: '', createdAt: now, updatedAt: now, order: '', files: ''
     }, o);
     return {
       jobs: [
@@ -88,7 +88,7 @@
           contact: 'John Roe', phone: '918-555-0101', email: 'john@example.com', type: 'Embroidery - Hats',
           description: 'Richardson 112, left-front logo', qty: 24, estimate: 'Approved', material: 'Received',
           artwork: 'Digitized', production: 'Working', delivery: 'Pick-Up', payment: 'Billed',
-          notes: 'Overdue example - due date is past', order: 1002 }),
+          notes: 'Left-front logo on Richardson 112 hats. Black hats, red and white thread.', order: 1002 }),
         job({ job: 1003, dateIn: isoDay(-20), due: isoDay(-12), customer: 'SAMPLE - Garfield Ave Dental',
           contact: 'Amy Poe', phone: '918-555-0102', email: 'amy@example.com', type: 'Vinyl - Signage',
           description: 'Window hours decal', qty: 1, status: 'Complete', estimate: 'Approved',

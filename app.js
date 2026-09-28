@@ -1,4 +1,4 @@
-// Signs & Stitches Job Tracker - app state, rendering and interactions.
+// Signs & Stitches Production Board - app state, rendering and interactions.
 // All data access goes through window.API (api.js).
 
 (function () {
@@ -28,7 +28,8 @@
     { key: 'notes', label: 'Notes', kind: 'long' },
     { key: 'createdAt', label: 'Created At', kind: 'stamp' },
     { key: 'updatedAt', label: 'Updated At', kind: 'stamp' },
-    { key: 'order', label: 'Order #' }
+    { key: 'order', label: 'Order #' },
+    { key: 'files', label: 'Files', kind: 'long' }
   ];
   const LABEL = {};
   FIELDS.forEach((f) => { LABEL[f.key] = f.label; });
@@ -37,20 +38,35 @@
   const REQUIRED = ['customer', 'type', 'due'];
   const CLOSED = ['Complete', 'Dead'];
 
+  // The production line a job moves along, left to right.
+  // Delivery counts as done once the job is Complete (picked up / shipped).
+  const STEPS = ['estimate', 'material', 'artwork', 'production', 'delivery'];
+
+  // Category pills. Project types that match none of these fall under "Other".
+  const CATEGORIES = [
+    { id: 'embroidery', label: 'Embroidery', test: (t) => /^embroidery/i.test(t) },
+    { id: 'screen', label: 'Screen Print', test: (t) => /screen ?print/i.test(t) },
+    { id: 'signs', label: 'Signs', test: (t) => /sign/i.test(t) },
+    { id: 'vehicle', label: 'Vehicle', test: (t) => /vehicle/i.test(t) },
+    { id: 'promo', label: 'Promo', test: (t) => /^promo/i.test(t) }
+  ];
+
   // Chip colours. Options not listed here (added later in the sheet) show grey.
   const CHIP_TONE = {
     Approved: 'green', Received: 'green', Digitized: 'green', Finished: 'green', 'Paid in Full': 'green', Complete: 'green',
     Sent: 'amber', Ordered: 'amber', 'Sent to Customer': 'amber', Working: 'amber', Billed: 'amber',
     'Being Designed': 'amber',
     Waiting: 'red', 'On Hold': 'red',
-    'Not Sent': 'grey',
     'In Queue': 'blue', Active: 'blue', 'Pick-Up': 'blue', Ship: 'blue', Courier: 'blue',
+    'Not Sent': 'grey',
     Dead: 'dead'
   };
 
   const POLL_MS = 20000;
   const SOON_DAYS = 3;
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const WIDE = '(min-width: 1280px)';
+  const PHONE = '(max-width: 767px)';
 
   /* ------------------------------------------------------------ State */
 
@@ -59,24 +75,29 @@
     lists: { types: [], options: {} },
     rules: [],
     view: 'open',
-    filters: { q: '', type: '', field: '', value: '' },
+    filters: { q: '', cat: '', quick: '', field: '', value: '', sort: 'due' },
+    selected: new Set(),
     pending: new Map(), // "job|field" -> { value, token } for saves in flight
     loaded: false,
     loading: false,
     lastSync: null,
     syncError: null,
     drawerJob: null,
-    picker: null, // { job, field }
+    panelTab: 'details',
+    editing: false,
+    activity: { job: null, items: [] },
+    picker: null, // { anchor, items, onPick } plus { job, field } for a field picker
     newLinkTo: 0 // when adding a project to an existing order
   };
 
   const $ = (id) => document.getElementById(id);
   const el = {
     sync: $('sync'), tableWrap: $('table-wrap'), cards: $('cards'), empty: $('empty'),
-    search: $('f-search'), type: $('f-type'), field: $('f-field'), value: $('f-value'), clear: $('f-clear'),
-    count: $('result-count'), picker: $('picker'), pickerTitle: $('picker-title'), pickerOptions: $('picker-options'),
-    pickerBackdrop: $('picker-backdrop'), drawer: $('drawer'), drawerBackdrop: $('drawer-backdrop'),
-    drawerBody: $('drawer-body'), drawerTitle: $('drawer-title'), drawerKicker: $('drawer-kicker'),
+    search: $('f-search'), sort: $('f-sort'), pills: $('pills'), stats: $('stats'),
+    fieldsBtn: $('fields-btn'), fieldsLabel: $('fields-label'), activeFilters: $('active-filters'),
+    picker: $('picker'), pickerTitle: $('picker-title'), pickerOptions: $('picker-options'),
+    pickerBackdrop: $('picker-backdrop'), panel: $('panel'), panelBackdrop: $('panel-backdrop'),
+    panelBody: $('panel-body'), panelTitle: $('panel-title'), bulk: $('bulk'), bulkCount: $('bulk-count'),
     newDialog: $('new-dialog'), newForm: $('new-form'), newError: $('new-error'), newSubmit: $('new-submit'),
     newTitle: $('new-title'), newNote: $('new-note'), projects: $('projects'), customers: $('customer-list'),
     toasts: $('toasts')
@@ -88,6 +109,20 @@
     return String(v == null ? '' : v).replace(/[&<>"']/g, (c) =>
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   }
+
+  const ICONS = {
+    chevron: '<path d="m9 6 6 6-6 6"/>',
+    caret: '<path d="m6 9 6 6 6-6"/>',
+    dots: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>',
+    list: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v6M12 16.5v.01"/>',
+    calendar: '<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/>',
+    check: '<circle cx="12" cy="12" r="9"/><path d="m8 12.5 2.8 2.8L16.5 9.5"/>',
+    note: '<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/>',
+    layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+    link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>'
+  };
+  const icon = (name, cls) => '<svg class="icon' + (cls ? ' ' + cls : '') + '" viewBox="0 0 24 24" aria-hidden="true">' + ICONS[name] + '</svg>';
 
   function todayIso() {
     const d = new Date();
@@ -117,11 +152,21 @@
       d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
   }
 
+  function fmtDay(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : d.getDate() + ' ' + MONTHS[d.getMonth()] + ' ' + d.getFullYear();
+  }
+
   function fmtValue(key, v) {
     const f = FIELDS.find((x) => x.key === key);
     if (f && f.kind === 'date') return fmtDate(v);
     if (f && f.kind === 'stamp') return fmtStamp(v);
     return v == null ? '' : String(v);
+  }
+
+  function initials(name) {
+    const words = String(name || '').replace(/^SAMPLE\s*-\s*/i, '').split(/[\s-]+/).filter((w) => /[a-z0-9]/i.test(w));
+    return ((words[0] || '?')[0] + (words.length > 1 ? words[words.length - 1][0] : '')).toUpperCase();
   }
 
   function findJob(no) {
@@ -133,7 +178,7 @@
   }
 
   function dueFlag(job) {
-    if (isClosed(job) || job.status !== 'Active' || !job.due) return '';
+    if (isClosed(job) || !job.due) return '';
     const d = daysFromToday(job.due);
     if (d === null) return '';
     if (d < 0) return 'overdue';
@@ -149,7 +194,6 @@
     return '';
   }
 
-  // sticky toasts stay until dismissed (used for "rest of the order is not ready" warnings).
   function toast(msg, kind, sticky) {
     const t = document.createElement('div');
     t.className = 'toast' + (kind ? ' toast-' + kind : '') + (sticky ? ' toast-sticky' : '');
@@ -169,6 +213,91 @@
     }
     setTimeout(() => t.classList.add('toast-out'), kind === 'error' ? 5000 : 2800);
     setTimeout(() => t.remove(), kind === 'error' ? 5400 : 3200);
+  }
+
+  function allowed(job, field, keepCurrent) {
+    return window.Options.allowedOptions(field, job.type, state.lists, state.rules, keepCurrent === false ? '' : job[field]);
+  }
+
+  function category(type) {
+    const c = CATEGORIES.find((x) => x.test(String(type || '')));
+    return c ? c.id : 'other';
+  }
+
+  /* ------------------------------------------------------------ Production steps */
+
+  // A step is done when it reaches the last option it offers for this project type
+  // (e.g. Artwork is done at Approved, or at Digitized for embroidery).
+  function stepInfo(job, key) {
+    if (key === 'delivery') {
+      return { key, value: job.delivery || '', done: job.status === 'Complete' };
+    }
+    const value = job[key] || '';
+    const opts = allowed(job, key, false);
+    const done = !!value && (value === opts[opts.length - 1] || value === 'Digitized');
+    return { key, value, done };
+  }
+
+  function steps(job) {
+    const list = STEPS.map((k) => stepInfo(job, k));
+    const cur = list.findIndex((s) => !s.done);
+    list.forEach((s, i) => { s.current = i === cur; });
+    return list;
+  }
+
+  function currentStep(job) {
+    return steps(job).find((s) => s.current) || null;
+  }
+
+  function health(job) {
+    if (job.status === 'Dead') return 'dead';
+    if (job.status === 'Complete') return 'green';
+    if (job.status === 'On Hold' || dueFlag(job) === 'overdue') return 'red';
+    if (dueFlag(job) === 'soon') return 'amber';
+    return 'green';
+  }
+
+  function needsAttention(job) {
+    return !isClosed(job) && (dueFlag(job) === 'overdue' || job.status === 'On Hold' ||
+      TRACK.some((k) => job[k] === 'Waiting'));
+  }
+
+  function readyForPickup(job) {
+    return !isClosed(job) && job.production === 'Finished';
+  }
+
+  // The short state shown in the Status column, and the field a tap on it edits.
+  function statusPill(job) {
+    if (job.status === 'Dead') return { text: 'Dead', tone: 'dead', field: 'status' };
+    if (job.status === 'Complete') return { text: 'Complete', tone: 'green', field: 'status' };
+    if (job.status === 'On Hold') return { text: 'On Hold', tone: 'red', field: 'status' };
+    if (readyForPickup(job)) {
+      const how = { Ship: 'Ready to Ship', Courier: 'Ready for Courier' }[job.delivery] || 'Ready for Pickup';
+      return { text: how, tone: 'green', field: 'status' };
+    }
+    const cur = currentStep(job);
+    if (!cur) return { text: job.status || 'Active', tone: 'blue', field: 'status' };
+    if (!cur.value) return { text: LABEL[cur.key] + ' not started', tone: 'blank', field: cur.key };
+    return { text: cur.value, tone: CHIP_TONE[cur.value] || 'grey', field: cur.key };
+  }
+
+  // What "Mark Next Step" would do, or null if there is nothing left.
+  function nextMove(job) {
+    if (isClosed(job)) return null;
+    const cur = currentStep(job);
+    if (!cur) return null;
+    if (cur.key === 'delivery') return { field: 'status', value: 'Complete', label: 'Mark Complete' };
+    const opts = allowed(job, cur.key, false);
+    const value = opts[opts.indexOf(cur.value) + 1];
+    if (!value) return null;
+    return { field: cur.key, value, label: LABEL[cur.key] + ': ' + value };
+  }
+
+  function markNextStep(jobNo) {
+    const job = findJob(jobNo);
+    const move = job && nextMove(job);
+    if (!move) { toast('Nothing left to do on job ' + jobNo); return Promise.resolve(false); }
+    return setField(job.job, move.field, move.value);
   }
 
   /* ------------------------------------------------------------ Orders (linked projects) */
@@ -200,14 +329,17 @@
     };
   }
 
+  function orderText(info) {
+    return 'Order ' + info.order + ' - ' + (info.ready === info.total ? 'all ' + info.total + ' ready' : info.ready + ' of ' + info.total + ' ready');
+  }
+
   function orderBadge(j) {
     const info = orderInfo(j);
     if (!info) return '';
     const all = info.ready === info.total;
     return '<button type="button" class="order-badge ' + (all ? 'order-ready' : 'order-waiting') +
       '" data-order-filter="' + info.order + '" title="Show every project in this order">' +
-      'Order ' + info.order + ' - ' + (all ? 'all ' + info.total + ' ready' : info.ready + ' of ' + info.total + ' ready') +
-      '</button>';
+      icon('link') + esc(orderText(info)) + '</button>';
   }
 
   function describe(j) {
@@ -235,10 +367,6 @@
     });
   }
 
-  function allowed(job, field) {
-    return window.Options.allowedOptions(field, job.type, state.lists, state.rules, job[field]);
-  }
-
   /* ------------------------------------------------------------ Data sync */
 
   function applyPending(job) {
@@ -259,14 +387,10 @@
       state.rules = data.rules || [];
       state.lastSync = new Date();
       state.syncError = null;
-      if (!state.loaded) {
-        state.loaded = true;
-        fillFilterOptions();
-      } else {
-        refreshFilterOptions();
-      }
+      state.loaded = true;
+      [...state.selected].forEach((n) => { if (!findJob(n)) state.selected.delete(n); });
       render();
-      if (state.drawerJob) syncDrawer();
+      if (state.drawerJob != null) renderPanel();
     } catch (err) {
       state.syncError = err.message || String(err);
       if (!state.loaded) {
@@ -284,7 +408,8 @@
       el.sync.textContent = 'Offline - retrying';
       el.sync.classList.add('sync-bad');
     } else if (state.lastSync) {
-      el.sync.textContent = 'Updated ' + state.lastSync.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      el.sync.textContent = 'Updated ' + state.lastSync.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) +
+        ' - refreshes every 20 seconds';
       el.sync.classList.remove('sync-bad');
     }
   }
@@ -307,10 +432,9 @@
     try {
       const saved = await window.API.updateField(jobNo, field, value);
       if (state.pending.get(key) && state.pending.get(key).token === token) state.pending.delete(key);
-      const i = state.jobs.findIndex((j) => j.job === jobNo);
-      if (i >= 0 && saved) state.jobs[i] = applyPending(saved);
-      if (state.drawerJob === jobNo) { syncDrawer(); loadActivity(jobNo); }
+      if (saved) mergeJobs([saved]);
       render();
+      if (state.drawerJob === jobNo) { renderPanel(); loadActivity(jobNo); }
       return true;
     } catch (err) {
       if (state.pending.get(key) && state.pending.get(key).token === token) {
@@ -320,7 +444,7 @@
       }
       toast('Could not save ' + LABEL[field] + ' for job ' + jobNo + ': ' + (err.message || err), 'error');
       render();
-      if (state.drawerJob === jobNo) syncDrawer(true);
+      if (state.drawerJob === jobNo) renderPanel(true);
       return false;
     }
   }
@@ -328,66 +452,34 @@
   function afterLocalChange(job, field, old) {
     render();
     if (field === 'status' && CLOSED.includes(job.status) !== CLOSED.includes(old)) {
-      toast('Job ' + job.job + (isClosed(job) ? ' moved to Closed' : ' reopened'));
+      toast('Job ' + job.job + (isClosed(job) ? ' moved to Completed' : ' reopened'));
     }
     if ((field === 'production' && job.production === 'Finished') || (field === 'status' && job.status === 'Complete')) {
       warnAboutOrder(job);
     }
-    if (state.drawerJob === job.job) syncDrawer();
+    if (state.drawerJob === job.job) renderPanel();
   }
 
-  /* ------------------------------------------------------------ Filters */
+  /* ------------------------------------------------------------ Filtering */
 
-  function fillFilterOptions() {
-    el.field.innerHTML = '<option value="">Any field</option>' +
-      TRACK.map((k) => '<option value="' + k + '">' + esc(LABEL[k]) + '</option>').join('');
-    refreshFilterOptions();
+  function inView(j) {
+    return state.view === 'open' ? !isClosed(j) : isClosed(j);
   }
 
-  function refreshFilterOptions() {
-    const cur = el.type.value;
-    el.type.innerHTML = '<option value="">All types</option>' +
-      state.lists.types.map((t) => '<option>' + esc(t) + '</option>').join('');
-    el.type.value = cur;
-    fillValueOptions();
-  }
-
-  function fillValueOptions() {
-    const field = el.field.value;
-    const cur = el.value.value;
-    el.value.disabled = !field;
-    if (!field) {
-      el.value.innerHTML = '<option value="">Any value</option>';
-      return;
-    }
-    const opts = (state.lists.options[field] || []).slice();
-    state.jobs.forEach((j) => { if (j[field] && !opts.includes(j[field])) opts.push(j[field]); });
-    el.value.innerHTML = '<option value="">Any ' + esc(LABEL[field]) + '</option>' +
-      '<option value="__blank__">Not set</option>' +
-      opts.map((o) => '<option>' + esc(o) + '</option>').join('');
-    el.value.value = opts.includes(cur) || cur === '__blank__' ? cur : '';
-  }
-
-  function readFilters() {
-    state.filters = {
-      q: el.search.value.trim().toLowerCase(),
-      type: el.type.value,
-      field: el.field.value,
-      value: el.value.value
-    };
-    const any = state.filters.q || state.filters.type || state.filters.field;
-    el.clear.hidden = !any;
-  }
-
-  function matches(job) {
+  function matches(job, skip) {
     const f = state.filters;
-    if (f.type && job.type !== f.type) return false;
+    if (skip !== 'cat' && f.cat && category(job.type) !== f.cat) return false;
+    if (f.quick) {
+      if (f.quick === 'attention' && !needsAttention(job)) return false;
+      if (f.quick === 'today' && daysFromToday(job.due) !== 0) return false;
+      if (f.quick === 'ready' && !readyForPickup(job)) return false;
+    }
     if (f.field && f.value) {
       const v = job[f.field] || '';
       if (f.value === '__blank__' ? v !== '' : v !== f.value) return false;
     }
     if (f.q) {
-      const hay = [job.job, job.customer, job.description, job.contact].join(' ').toLowerCase();
+      const hay = [job.job, job.customer, job.description, job.contact, job.type].join(' ').toLowerCase();
       const ok = f.q.split(/\s+/).every((w) => {
         // "#1002" means exactly job 1002 or anything in order 1002.
         const exact = /^#(\d+)$/.exec(w);
@@ -399,11 +491,14 @@
     return true;
   }
 
-  /* ------------------------------------------------------------ Rendering */
-
   function visibleJobs() {
     const open = state.view === 'open';
-    const list = state.jobs.filter((j) => (open ? !isClosed(j) : isClosed(j))).filter(matches);
+    const list = state.jobs.filter(inView).filter((j) => matches(j));
+    const sort = state.filters.sort;
+    if (sort === 'job') return list.sort((a, b) => (open ? a.job - b.job : b.job - a.job));
+    if (sort === 'customer') return list.sort((a, b) => String(a.customer).localeCompare(String(b.customer)) || a.job - b.job);
+    if (sort === 'updated') return list.sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)) || b.job - a.job);
+
     const dueKey = (j) => j.due || (open ? '9999-99-99' : '0000-00-00');
     // Keep an order's projects next to each other, placed by its most urgent one.
     const lead = new Map();
@@ -417,56 +512,85 @@
     const groupDue = (j) => (lead.has(orderOf(j)) ? lead.get(orderOf(j)) : dueKey(j));
     const groupId = (j) => orderOf(j) || j.job;
     const dir = open ? 1 : -1;
-    list.sort((a, b) =>
+    return list.sort((a, b) =>
       dir * groupDue(a).localeCompare(groupDue(b)) ||
       dir * (groupId(a) - groupId(b)) ||
       dir * dueKey(a).localeCompare(dueKey(b)) ||
       dir * (a.job - b.job));
-    return list;
   }
 
-  function chip(job, field, opts) {
-    const v = job[field] || '';
-    const tone = v ? (CHIP_TONE[v] || 'grey') : 'blank';
-    const pending = state.pending.has(job.job + '|' + field) ? ' is-pending' : '';
-    const label = opts && opts.showLabel ? '<span class="chip-label">' + esc(LABEL[field]) + '</span>' : '';
-    return '<button type="button" class="chip chip-' + tone + pending + '" data-chip="' + field + '" data-job="' + job.job +
-      '" aria-label="' + esc(LABEL[field] + ': ' + (v || 'not set') + '. Change') + '">' +
-      label + '<span class="chip-value">' + esc(v || 'Not set') + '</span></button>';
+  /* ------------------------------------------------------------ Rendering: board */
+
+  function stepper(job, opts) {
+    const tone = health(job);
+    const list = steps(job);
+    return '<div class="stepper stepper-' + tone + (opts && opts.big ? ' stepper-big' : '') + '" role="list" aria-label="Production steps">' +
+      list.map((s, i) => {
+        const st = s.done ? 'done' : s.current ? 'current' : 'todo';
+        const title = LABEL[s.key] + ': ' + (s.value || 'not started') + (s.done ? ' (done)' : s.current ? ' (next up)' : '');
+        return '<button type="button" role="listitem" class="step step-' + st + (i && list[i - 1].done ? ' step-after-done' : '') +
+          '" data-chip="' + s.key + '" data-job="' + job.job + '" title="' + esc(title) + '" aria-label="' + esc(title + '. Change') + '">' +
+          '<span class="dot"></span><span class="step-label">' + esc(LABEL[s.key]) + '</span></button>';
+      }).join('') + '</div>';
+  }
+
+  function pill(job) {
+    const p = statusPill(job);
+    const pending = state.pending.has(job.job + '|' + p.field) ? ' is-pending' : '';
+    return '<button type="button" class="pill pill-' + p.tone + pending + '" data-chip="' + p.field + '" data-job="' + job.job +
+      '" aria-label="' + esc('Status: ' + p.text + '. Change ' + LABEL[p.field]) + '">' + esc(p.text) + '</button>';
   }
 
   function dueCell(job) {
     const flag = dueFlag(job);
     const note = dueNote(job);
-    return '<span class="due' + (flag ? ' due-' + flag : '') + '">' + esc(fmtDate(job.due) || '-') +
+    return '<span class="due' + (flag ? ' due-' + flag : '') + '"><span class="due-date">' + esc(fmtDate(job.due) || '-') + '</span>' +
       (note ? '<span class="due-note">' + esc(note) + '</span>' : '') + '</span>';
   }
 
+  function avatar(name) {
+    return '<span class="avatar" aria-hidden="true">' + esc(initials(name)) + '</span>';
+  }
+
+  // A save triggered by blur (e.g. clicking a tab after typing) must not redraw the
+  // button being clicked, or the click is lost. Hold redraws until the click lands.
+  const deferred = { down: false, board: false, panel: false };
+
   function render() {
     if (!state.loaded) return;
+    if (deferred.down) { deferred.board = true; return; }
+    renderCounts();
+    renderStats();
+    renderPills();
+    renderActiveFilters();
+
     const jobs = visibleJobs();
-    const open = state.jobs.filter((j) => !isClosed(j)).length;
-    $('count-open').textContent = open;
-    $('count-closed').textContent = state.jobs.length - open;
+    const allChecked = jobs.length && jobs.every((j) => state.selected.has(j.job));
 
     const head = '<tr>' +
-      '<th class="col-job sticky-1">Job #</th>' +
-      '<th class="col-customer sticky-2">Customer</th>' +
-      '<th>Project Type</th><th class="col-desc">Description</th><th>Due Date</th>' +
-      TRACK.map((k) => '<th>' + esc(LABEL[k]) + '</th>').join('') + '</tr>';
+      '<th class="col-check"><input type="checkbox" id="check-all" aria-label="Select all shown jobs"' + (allChecked ? ' checked' : '') + '></th>' +
+      '<th class="col-job">Job #</th><th class="col-customer">Customer</th><th class="col-desc">Description</th>' +
+      '<th class="col-stage">Stage</th><th class="col-due">Due Date</th><th class="col-status">Status</th><th class="col-go"><span class="sr">Open</span></th></tr>';
 
     const rows = jobs.map((j) => {
-      const dead = j.status === 'Dead' ? ' row-dead' : '';
-      const linked = orderInfo(j) ? ' row-linked' : '';
-      return '<tr class="row' + dead + linked + '" data-job="' + j.job + '">' +
-        '<td class="col-job sticky-1">' + j.job + '</td>' +
-        '<td class="col-customer sticky-2"><button type="button" class="open-job" data-open="' + j.job + '">' +
-          esc(j.customer || '(no customer)') + '</button>' +
-          (j.contact ? '<span class="sub">' + esc(j.contact) + '</span>' : '') + orderBadge(j) + '</td>' +
-        '<td class="col-type">' + esc(j.type) + '</td>' +
-        '<td class="col-desc"><span class="clamp">' + esc(j.description) + '</span></td>' +
+      const cls = ['row', 'row-' + health(j)];
+      if (j.status === 'Dead') cls.push('row-dead');
+      if (state.drawerJob === j.job) cls.push('is-selected');
+      if (orderInfo(j)) cls.push('row-linked');
+      return '<tr class="' + cls.join(' ') + '" data-job="' + j.job + '">' +
+        '<td class="col-check"><input type="checkbox" data-check="' + j.job + '" aria-label="Select job ' + j.job + '"' +
+          (state.selected.has(j.job) ? ' checked' : '') + '></td>' +
+        '<td class="col-job"><span class="job-no">' + j.job + '</span>' +
+          '<button type="button" class="row-menu" data-row-menu="' + j.job + '" aria-label="Actions for job ' + j.job + '">' + icon('dots') + '</button></td>' +
+        '<td class="col-customer"><div class="who">' + avatar(j.customer) + '<div class="who-text">' +
+          '<button type="button" class="open-job" data-open="' + j.job + '">' + esc(j.customer || '(no customer)') + '</button>' +
+          (j.contact ? '<span class="sub">' + esc(j.contact) + '</span>' : '') + '</div></div></td>' +
+        '<td class="col-desc"><span class="desc">' + esc(j.description || '-') + '</span>' +
+          '<span class="sub">' + esc(j.type) + '</span>' + orderBadge(j) + '</td>' +
+        '<td class="col-stage">' + stepper(j) + '</td>' +
         '<td class="col-due">' + dueCell(j) + '</td>' +
-        TRACK.map((k) => '<td>' + chip(j, k) + '</td>').join('') +
+        '<td class="col-status">' + pill(j) + '</td>' +
+        '<td class="col-go"><button type="button" class="go" data-open="' + j.job + '" aria-label="Open job ' + j.job + '">' + icon('chevron') + '</button></td>' +
         '</tr>';
     }).join('');
 
@@ -474,49 +598,105 @@
       ? '<table class="jobs"><thead>' + head + '</thead><tbody>' + rows + '</tbody></table>' : '';
 
     el.cards.innerHTML = jobs.map((j) => {
-      const dead = j.status === 'Dead' ? ' card-dead' : '';
-      const flag = dueFlag(j);
-      const linked = orderInfo(j) ? ' card-linked' : '';
-      return '<article class="card' + dead + linked + (flag ? ' card-' + flag : '') + '" data-job="' + j.job + '">' +
+      const cls = ['card', 'card-' + health(j)];
+      if (j.status === 'Dead') cls.push('card-dead');
+      return '<article class="' + cls.join(' ') + '" data-job="' + j.job + '">' +
         '<button type="button" class="card-head open-job" data-open="' + j.job + '">' +
-          '<span class="card-top"><span class="card-customer">' + esc(j.customer || '(no customer)') + '</span>' +
+          avatar(j.customer) +
+          '<span class="card-main"><span class="card-top"><span class="card-customer">' + esc(j.customer || '(no customer)') + '</span>' +
           '<span class="card-no">#' + j.job + '</span></span>' +
-          '<span class="card-meta">' + esc(j.type) + '</span>' +
-          (j.description ? '<span class="card-desc">' + esc(j.description) + '</span>' : '') +
-          '<span class="card-due">Due ' + dueCell(j) + '</span>' +
+          '<span class="card-desc">' + esc(j.description || j.type) + '</span>' +
+          '<span class="card-meta">' + esc(j.type) + '</span></span>' +
         '</button>' +
         (orderInfo(j) ? '<div class="card-order">' + orderBadge(j) + '</div>' : '') +
-        '<div class="card-chips">' + TRACK.map((k) => chip(j, k, { showLabel: true })).join('') + '</div>' +
+        '<div class="card-stage">' + stepper(j) + '</div>' +
+        '<div class="card-foot">' + dueCell(j) + pill(j) + '</div>' +
       '</article>';
     }).join('');
 
-    const total = state.jobs.filter((j) => (state.view === 'open' ? !isClosed(j) : isClosed(j))).length;
-    el.count.textContent = jobs.length === total ? total + ' jobs' : jobs.length + ' of ' + total + ' jobs';
+    const total = state.jobs.filter(inView).length;
     el.empty.hidden = jobs.length > 0;
     el.empty.textContent = total === 0
-      ? (state.view === 'open' ? 'No open jobs. Press New Job to add one.' : 'No closed jobs yet.')
+      ? (state.view === 'open' ? 'No open jobs. Press New Job to add one.' : 'No completed jobs yet.')
       : 'No jobs match these filters.';
 
+    renderBulk();
+
     // A refresh replaced the chips; keep the open picker tied to the new one.
-    if (state.picker) {
+    if (state.picker && state.picker.job != null) {
       const sel = '[data-chip="' + state.picker.field + '"][data-job="' + state.picker.job + '"]';
       const next = [...document.querySelectorAll(sel)].find((n) => n.offsetParent);
-      if (next) state.picker.anchor = next; else closePicker();
+      if (next) state.picker.anchor = next;
     }
   }
 
-  /* ------------------------------------------------------------ Chip picker */
+  function renderCounts() {
+    const open = state.jobs.filter((j) => !isClosed(j)).length;
+    $('count-open').textContent = open;
+    $('count-closed').textContent = state.jobs.length - open;
+  }
 
-  function openPicker(jobNo, field, anchor) {
-    const job = findJob(jobNo);
-    if (!job) return;
-    state.picker = { job: jobNo, field, anchor };
-    el.pickerTitle.textContent = LABEL[field] + ' - ' + job.customer;
-    const opts = allowed(job, field);
-    el.pickerOptions.innerHTML = opts.map((o) =>
-      '<button type="button" class="chip chip-' + (CHIP_TONE[o] || 'grey') + (o === job[field] ? ' is-current' : '') +
-      '" data-pick="' + esc(o) + '">' + esc(o) + '</button>').join('') +
-      '<button type="button" class="chip chip-blank' + (!job[field] ? ' is-current' : '') + '" data-pick="">Not set</button>';
+  function renderStats() {
+    const open = state.jobs.filter((j) => !isClosed(j));
+    const cards = [
+      { id: '', tone: 'neutral', icon: 'list', title: 'Open Jobs', n: open.length, sub: 'Total in production' },
+      { id: 'attention', tone: 'red', icon: 'alert', title: 'Needs Attention', n: open.filter(needsAttention).length, sub: 'Waiting, on hold, or overdue' },
+      { id: 'today', tone: 'amber', icon: 'calendar', title: 'Due Today', n: open.filter((j) => daysFromToday(j.due) === 0).length, sub: 'Jobs due today' },
+      { id: 'ready', tone: 'green', icon: 'check', title: 'Ready for Pickup', n: open.filter(readyForPickup).length, sub: 'Finished, awaiting pickup' }
+    ];
+    el.stats.innerHTML = cards.map((c) => {
+      const active = !!c.id && state.view === 'open' && state.filters.quick === c.id;
+      return '<button type="button" class="stat stat-' + c.tone + (active ? ' is-active' : '') + '" data-quick="' + c.id +
+        '" aria-pressed="' + active + '">' +
+        '<span class="stat-icon">' + icon(c.icon) + '</span>' +
+        '<span class="stat-text"><span class="stat-title">' + c.title + '</span>' +
+        '<span class="stat-n" data-stat="' + (c.id || 'open') + '">' + c.n + '</span>' +
+        '<span class="stat-sub">' + c.sub + '</span></span>' + icon('chevron', 'stat-go') + '</button>';
+    }).join('');
+  }
+
+  function renderPills() {
+    const pool = state.jobs.filter(inView).filter((j) => matches(j, 'cat'));
+    const count = (id) => pool.filter((j) => !id || category(j.type) === id).length;
+    const pills = [{ id: '', label: 'All' }].concat(CATEGORIES, [{ id: 'other', label: 'Other' }]);
+    el.pills.innerHTML = pills
+      .filter((p) => p.id !== 'other' || state.jobs.some((j) => category(j.type) === 'other'))
+      .map((p) => '<button type="button" class="cat' + (state.filters.cat === p.id ? ' is-active' : '') + '" data-cat="' + p.id +
+        '" aria-pressed="' + (state.filters.cat === p.id) + '">' + esc(p.label) + ' <span class="cat-n">' + count(p.id) + '</span></button>')
+      .join('');
+  }
+
+  function renderActiveFilters() {
+    const f = state.filters;
+    el.fieldsLabel.textContent = f.field && f.value
+      ? LABEL[f.field] + ': ' + (f.value === '__blank__' ? 'Not set' : f.value) : 'All Fields';
+    el.fieldsBtn.classList.toggle('is-active', !!(f.field && f.value));
+    const bits = [];
+    if (f.quick) bits.push({ k: 'quick', t: { attention: 'Needs Attention', today: 'Due Today', ready: 'Ready for Pickup' }[f.quick] });
+    if (f.q) bits.push({ k: 'q', t: 'Search: ' + f.q });
+    if (f.field && f.value) bits.push({ k: 'field', t: el.fieldsLabel.textContent });
+    el.activeFilters.hidden = !bits.length;
+    el.activeFilters.innerHTML = bits.map((b) => '<button type="button" class="chip-filter" data-clear="' + b.k + '">' + esc(b.t) +
+      ' <span aria-hidden="true">x</span><span class="sr">Remove filter</span></button>').join('') +
+      (bits.length > 1 ? '<button type="button" class="link-btn" data-clear="all">Clear all</button>' : '');
+  }
+
+  function renderBulk() {
+    const n = state.selected.size;
+    el.bulk.hidden = !n;
+    el.bulkCount.textContent = n + (n === 1 ? ' job selected' : ' jobs selected');
+  }
+
+  /* ------------------------------------------------------------ Picker / menus */
+
+  // items: [{ label, value, tone, current, ... }]; onPick(item) runs after the menu closes.
+  function openMenu(anchor, title, items, onPick, ctx) {
+    closePicker(true);
+    state.picker = Object.assign({ anchor, onPick, items }, ctx || {});
+    el.pickerTitle.textContent = title;
+    el.pickerOptions.innerHTML = items.map((it, i) =>
+      '<button type="button" class="' + (it.tone ? 'pill pill-' + it.tone : 'menu-item') + (it.current ? ' is-current' : '') +
+      '" data-pick="' + i + '"' + (it.value != null ? ' data-value="' + esc(it.value) + '"' : '') + '>' + esc(it.label) + '</button>').join('');
     el.picker.hidden = false;
     el.pickerBackdrop.hidden = false;
     positionPicker(anchor);
@@ -524,32 +704,112 @@
     if (first) first.focus();
   }
 
+  function openFieldPicker(jobNo, field, anchor) {
+    const job = findJob(jobNo);
+    if (!job) return;
+    const items = allowed(job, field).map((o) => ({ label: o, value: o, tone: CHIP_TONE[o] || 'grey', current: o === job[field] }))
+      .concat([{ label: 'Not set', value: '', tone: 'blank', current: !job[field] }]);
+    openMenu(anchor, LABEL[field] + ' - ' + job.customer, items, (it) => setField(jobNo, field, it.value), { job: jobNo, field });
+  }
+
   function positionPicker(anchor) {
-    if (window.matchMedia('(max-width: 767px)').matches) {
+    if (window.matchMedia(PHONE).matches || !anchor) {
       el.picker.style.left = el.picker.style.top = '';
       return;
     }
     const r = anchor.getBoundingClientRect();
     const pw = el.picker.offsetWidth;
     const ph = el.picker.offsetHeight;
-    let left = Math.min(r.left, window.innerWidth - pw - 8);
+    const left = Math.min(r.left, window.innerWidth - pw - 8);
     let top = r.bottom + 6;
     if (top + ph > window.innerHeight - 8) top = Math.max(8, r.top - ph - 6);
     el.picker.style.left = Math.max(8, left) + 'px';
     el.picker.style.top = top + 'px';
   }
 
-  function closePicker() {
+  function closePicker(silent) {
     if (!state.picker) return;
-    const { job, field } = state.picker;
+    const p = state.picker;
     state.picker = null;
     el.picker.hidden = true;
     el.pickerBackdrop.hidden = true;
-    const back = document.querySelector('[data-chip="' + field + '"][data-job="' + job + '"]');
-    if (back && back.offsetParent) back.focus({ preventScroll: true });
+    if (!silent && p.anchor && p.anchor.isConnected && p.anchor.offsetParent) p.anchor.focus({ preventScroll: true });
   }
 
-  /* ------------------------------------------------------------ Drawer */
+  function rowMenu(jobNo, anchor) {
+    const job = findJob(jobNo);
+    if (!job) return;
+    const move = nextMove(job);
+    const items = [{ label: 'Open details', act: 'open' }];
+    if (move) items.push({ label: 'Mark next step (' + move.label + ')', act: 'next' });
+    if (job.status === 'On Hold') items.push({ label: 'Take off hold', act: 'status', value: 'Active' });
+    else if (!isClosed(job)) items.push({ label: 'Put on hold', act: 'status', value: 'On Hold' });
+    if (!isClosed(job)) items.push({ label: 'Mark complete', act: 'status', value: 'Complete' }, { label: 'Mark dead (quote lost)', act: 'status', value: 'Dead' });
+    else items.push({ label: 'Reopen', act: 'status', value: 'Active' });
+    openMenu(anchor, 'Job #' + jobNo + ' - ' + job.customer, items, (it) => {
+      if (it.act === 'open') openPanel(jobNo);
+      if (it.act === 'next') markNextStep(jobNo);
+      if (it.act === 'status') setField(jobNo, 'status', it.value);
+    });
+  }
+
+  /* ------------------------------------------------------------ Job panel */
+
+  function openPanel(jobNo) {
+    if (!findJob(jobNo)) return;
+    closePicker(true);
+    const switching = state.drawerJob !== jobNo;
+    state.drawerJob = jobNo;
+    if (switching) { state.panelTab = 'details'; state.editing = false; state.activity = { job: jobNo, items: [], loading: true }; }
+    renderPanel(true);
+    el.panel.hidden = false;
+    document.body.classList.add('panel-open');
+    const docked = window.matchMedia(WIDE).matches;
+    el.panelBackdrop.hidden = docked;
+    document.body.classList.toggle('no-scroll', !docked);
+    requestAnimationFrame(() => el.panel.classList.add('is-open'));
+    render();
+    if (switching) loadActivity(jobNo);
+    if (!docked) $('panel-close').focus();
+  }
+
+  function closePanel() {
+    if (state.drawerJob == null) return;
+    const no = state.drawerJob;
+    const active = document.activeElement;
+    if (active && active.dataset && active.dataset.field) active.blur(); // commits a pending text edit
+    state.drawerJob = null;
+    state.editing = false;
+    el.panel.classList.remove('is-open');
+    el.panelBackdrop.hidden = true;
+    document.body.classList.remove('no-scroll', 'panel-open');
+    el.panel.hidden = true;
+    render();
+    const back = [...document.querySelectorAll('[data-open="' + no + '"]')].find((n) => n.offsetParent);
+    if (back) back.focus({ preventScroll: true });
+  }
+
+  function lastChange(label, value) {
+    const hit = state.activity.items.find((a) => a.field === label && (value == null || a.newValue === value));
+    return hit ? fmtDay(hit.at) : '';
+  }
+
+  function progressRows(job) {
+    const list = steps(job);
+    const pay = job.payment || '';
+    const rows = list.map((s) => ({
+      key: s.key, label: LABEL[s.key], value: s.value, state: s.done ? 'done' : s.current ? 'current' : 'todo',
+      date: s.done ? (s.key === 'delivery' ? lastChange('Status', 'Complete') : lastChange(LABEL[s.key], s.value)) : ''
+    }));
+    rows.push({ key: 'payment', label: 'Payment', value: pay, state: pay === 'Paid in Full' ? 'done' : pay ? 'current' : 'todo',
+      date: pay === 'Paid in Full' ? lastChange('Payment', pay) : '' });
+    return rows.map((r) =>
+      '<li class="prog prog-' + r.state + '"><span class="prog-mark" aria-hidden="true"></span>' +
+      '<span class="prog-label">' + esc(r.label) + '</span>' +
+      '<button type="button" class="prog-value" data-chip="' + r.key + '" data-job="' + job.job + '" aria-label="' +
+        esc(r.label + ': ' + (r.value || 'not set') + '. Change') + '">' + esc(r.value || '-') + '</button>' +
+      '<span class="prog-date">' + esc(r.date) + '</span></li>').join('');
+  }
 
   function inputFor(f, job) {
     const v = job[f.key] == null ? '' : job[f.key];
@@ -565,78 +825,146 @@
       return '<select' + attrs + '><option value="">Not set</option>' + allowed(job, f.key).map((o) =>
         '<option' + (o === v ? ' selected' : '') + '>' + esc(o) + '</option>').join('') + '</select>';
     }
-    if (f.kind === 'long') return '<textarea' + attrs + ' rows="3">' + esc(v) + '</textarea>';
+    if (f.kind === 'long') return '<textarea' + attrs + ' rows="' + (f.rows || 3) + '">' + esc(v) + '</textarea>';
     const type = { date: 'date', number: 'number', tel: 'tel', email: 'email' }[f.kind] || 'text';
-    const extra = f.kind === 'number' ? ' min="0" inputmode="numeric"' : '';
-    return '<input type="' + type + '"' + attrs + extra + ' value="' + esc(v) + '" autocomplete="off">';
+    return '<input type="' + type + '"' + attrs + ' value="' + esc(v) + '" autocomplete="off">';
   }
 
-  function openDrawer(jobNo) {
-    const job = findJob(jobNo);
-    if (!job) return;
-    closePicker();
-    state.drawerJob = jobNo;
-    const group = (keys) => keys.map((k) => {
+  function fieldGroup(job, keys) {
+    return keys.map((k) => {
       const f = FIELDS.find((x) => x.key === k);
       const wide = f.kind === 'long' || k === 'customer' || k === 'email' ? ' span-2' : '';
       return '<label class="field' + wide + '" for="d-' + k + '">' + esc(f.label) +
         (REQUIRED.includes(k) ? ' <span class="req">required</span>' : '') +
         (f.kind === 'date' ? '<span class="date-says" data-says="' + k + '"></span>' : '') + inputFor(f, job) + '</label>';
     }).join('');
-
-    el.drawerBody.innerHTML =
-      '<div class="drawer-chips" id="drawer-chips"></div>' +
-      '<section class="drawer-order" id="drawer-order" aria-label="Linked projects"></section>' +
-      '<h3 class="section-title">Job</h3>' +
-      '<div class="form-grid">' + group(['customer', 'type', 'dateIn', 'due', 'description']) + '</div>' +
-      '<h3 class="section-title">Tracking</h3>' +
-      '<div class="form-grid">' + group(TRACK) + '</div>' +
-      '<h3 class="section-title">Contact</h3>' +
-      '<div class="form-grid">' + group(['contact', 'phone', 'email']) + '</div>' +
-      '<h3 class="section-title">Notes</h3>' +
-      '<div class="form-grid">' + group(['notes']) + '</div>' +
-      '<p class="stamps" id="drawer-stamps"></p>' +
-      '<h3 class="section-title">Activity</h3>' +
-      '<ol class="activity" id="activity"><li class="muted">Loading...</li></ol>';
-
-    syncDrawer();
-    el.drawer.hidden = false;
-    el.drawerBackdrop.hidden = false;
-    document.body.classList.add('no-scroll');
-    requestAnimationFrame(() => el.drawer.classList.add('is-open'));
-    $('drawer-close').focus();
-    loadActivity(jobNo);
   }
 
-  // Refresh drawer inputs from state, leaving alone whatever the user is typing in.
-  function syncDrawer(force) {
+  function fileLinks(job) {
+    return String(job.files || '').split(/\n+/).map((s) => s.trim()).filter((s) => /^https?:\/\//i.test(s));
+  }
+
+  // Re-draws the panel. While someone is typing in it, only the other inputs are refreshed.
+  function renderPanel(force) {
+    if (!force && deferred.down) { deferred.panel = true; return; }
     const job = findJob(state.drawerJob);
-    if (!job) return;
-    el.drawerKicker.textContent = 'Job #' + job.job + (job.status === 'Dead' ? ' - Dead' : '');
-    el.drawerTitle.textContent = job.customer || '(no customer)';
-    el.drawer.classList.toggle('drawer-dead', job.status === 'Dead');
-    $('drawer-chips').innerHTML = '<span class="drawer-due-label">Due</span> ' + dueCell(job);
-    FIELDS.forEach((f) => {
-      const input = $('d-' + f.key);
-      if (!input || (!force && input === document.activeElement)) return;
-      if (f.track || f.key === 'type') {
-        const tmp = document.createElement('div');
-        tmp.innerHTML = inputFor(f, job);
-        input.innerHTML = tmp.firstChild.innerHTML;
-      }
-      input.value = job[f.key] == null ? '' : job[f.key];
+    if (!job) { if (state.drawerJob != null) closePanel(); return; }
+    const focused = document.activeElement;
+    if (!force && focused && el.panelBody.contains(focused) && focused.dataset.field) {
+      patchPanelInputs(job, focused);
+      return;
+    }
+    el.panelTitle.textContent = 'Job #' + job.job;
+    el.panel.classList.toggle('panel-dead', job.status === 'Dead');
+    const move = nextMove(job);
+    const info = orderInfo(job);
+    const tab = state.panelTab;
+    const flag = dueFlag(job);
+    const tabs = [['details', 'Details'], ['files', 'Files'], ['notes', 'Notes'], ['history', 'History']];
+
+    let body = '';
+    if (tab === 'details' && state.editing) {
+      body =
+        '<h3 class="section-title">Job</h3><div class="form-grid">' + fieldGroup(job, ['customer', 'type', 'dateIn', 'due', 'description']) + '</div>' +
+        '<h3 class="section-title">Tracking</h3><div class="form-grid">' + fieldGroup(job, TRACK) + '</div>' +
+        '<h3 class="section-title">Contact</h3><div class="form-grid">' + fieldGroup(job, ['contact', 'phone', 'email']) + '</div>' +
+        '<p class="stamps">' + esc((job.createdAt ? 'Created ' + fmtStamp(job.createdAt) : '') +
+          (job.updatedAt ? ' - Last changed ' + fmtStamp(job.updatedAt) : '')) + '</p>';
+    } else if (tab === 'details') {
+      body =
+        '<dl class="info card-box">' +
+          '<dt>Project Type</dt><dd>' + esc(job.type || '-') + '</dd>' +
+          '<dt>Description</dt><dd>' + esc(job.description || '-') + '</dd>' +
+          '<dt>Order Info</dt><dd>' + (info ? esc(orderText(info)) : 'On its own') + '</dd>' +
+          '<dt>Date In</dt><dd>' + esc(fmtDate(job.dateIn) || '-') + '</dd>' +
+        '</dl>' +
+        '<section class="drawer-order card-box" id="drawer-order" aria-label="Linked projects">' + drawerOrder(job) + '</section>' +
+        '<section class="card-box progress"><h3 class="box-title">Production Progress</h3>' + stepper(job, { big: true }) +
+          '<ul class="prog-list">' + progressRows(job) + '</ul></section>' +
+        '<div class="mini-cards">' +
+          '<button type="button" class="mini mini-due' + (flag ? ' mini-' + flag : '') + '" data-act="edit-due">' + icon('calendar') +
+            '<span><span class="mini-label">Due Date</span><span class="mini-value">' + esc(fmtDate(job.due) || '-') + '</span>' +
+            (dueNote(job) ? '<span class="mini-note">' + esc(dueNote(job)) + '</span>' : '') + '</span></button>' +
+          (info
+            ? '<div class="mini">' + icon('layers') + '<span><span class="mini-label">Order</span><span class="mini-value">' +
+              info.ready + ' / ' + info.total + '</span><span class="mini-note">ready</span></span></div>'
+            : '<button type="button" class="mini" data-chip="payment" data-job="' + job.job + '">' + icon('layers') +
+              '<span><span class="mini-label">Payment</span><span class="mini-value">' + esc(job.payment || 'Not set') + '</span></span></button>') +
+        '</div>' +
+        '<button type="button" class="card-box notes-box" data-tab="notes">' + icon('note') +
+          '<span><span class="box-title">Notes</span><span class="notes-text">' + esc(job.notes || 'No notes yet. Tap to add one.') + '</span></span></button>';
+    } else if (tab === 'files') {
+      const links = fileLinks(job);
+      body = '<p class="muted small">Link art and proof files (Google Drive, Dropbox, and so on). Paste a link and press Add.</p>' +
+        '<ul class="files">' + (links.length ? links.map((u, i) =>
+          '<li><a href="' + esc(u) + '" target="_blank" rel="noopener noreferrer">' + icon('link') + '<span>' + esc(u.replace(/^https?:\/\/(www\.)?/i, '')) + '</span></a>' +
+          '<button type="button" class="btn btn-ghost btn-small" data-remove-file="' + i + '">Remove</button></li>').join('')
+          : '<li class="muted">No files linked yet.</li>') + '</ul>' +
+        '<div class="add-file"><input class="input" id="file-url" type="url" placeholder="https://..." aria-label="File link">' +
+        '<button type="button" class="btn btn-primary" data-act="add-file">Add</button></div>';
+    } else if (tab === 'notes') {
+      body = '<label class="field" for="d-notes">Notes' + inputFor({ key: 'notes', kind: 'long', rows: 10 }, job) + '</label>' +
+        '<p class="muted small">Saves when you click away.</p>';
+    } else {
+      body = '<ol class="activity" id="activity">' + activityItems() + '</ol>';
+    }
+
+    el.panelBody.innerHTML =
+      '<div class="who-big">' + avatar(job.customer) + '<div>' +
+        '<div class="who-name">' + esc(job.customer || '(no customer)') + '</div>' +
+        (job.contact ? '<div class="who-line">' + esc(job.contact) + '</div>' : '') +
+        (job.phone ? '<div class="who-line"><a href="tel:' + esc(job.phone.replace(/[^\d+]/g, '')) + '">' + esc(job.phone) + '</a></div>' : '') +
+        (job.email ? '<div class="who-line"><a href="mailto:' + esc(job.email) + '">' + esc(job.email) + '</a></div>' : '') +
+      '</div></div>' +
+      '<div class="panel-actions">' +
+        '<div class="split">' +
+          '<button type="button" class="btn btn-primary" data-act="next"' + (move ? ' title="' + esc(move.label) + '"' : ' disabled') + '>' +
+            (move ? 'Mark Next Step' : 'All Steps Done') + '</button>' +
+          '<button type="button" class="btn btn-primary split-caret" data-act="steps" aria-label="Choose a step to update">' + icon('caret') + '</button>' +
+        '</div>' +
+        '<button type="button" class="btn btn-ghost" data-act="edit">' + (state.editing ? 'Done Editing' : 'Edit Job') + '</button>' +
+      '</div>' +
+      (move ? '<p class="next-hint">Next: ' + esc(move.label) + '</p>' : '') +
+      '<div class="panel-tabs" role="tablist">' + tabs.map(([k, t]) =>
+        '<button type="button" role="tab" class="ptab" data-tab="' + k + '" aria-selected="' + (tab === k) + '">' + t + '</button>').join('') + '</div>' +
+      '<div class="panel-content">' + body + '</div>';
+    showDates(el.panelBody, job);
+  }
+
+  function patchPanelInputs(job, focused) {
+    el.panelBody.querySelectorAll('[data-field]').forEach((input) => {
+      if (input === focused) return;
+      input.value = job[input.dataset.field] == null ? '' : job[input.dataset.field];
     });
-    showDates(el.drawerBody, job);
-    const orderBox = $('drawer-order');
-    if (!orderBox.contains(document.activeElement) || force) orderBox.innerHTML = drawerOrder(job);
-    $('drawer-stamps').textContent =
-      (job.createdAt ? 'Created ' + fmtStamp(job.createdAt) : '') +
-      (job.updatedAt ? (job.createdAt ? ' - ' : '') + 'Last changed ' + fmtStamp(job.updatedAt) : '');
+  }
+
+  function activityItems() {
+    if (state.activity.loading && !state.activity.items.length) return '<li class="muted">Loading...</li>';
+    if (state.activity.error) return '<li class="muted">Could not load history.</li>';
+    if (!state.activity.items.length) return '<li class="muted">No changes recorded yet.</li>';
+    return state.activity.items.map((a) =>
+      '<li><span class="act-when">' + esc(fmtStamp(a.at)) + '</span>' +
+      '<span class="act-what"><strong>' + esc(a.field) + '</strong> ' +
+      (a.field === 'Created' ? esc(a.newValue)
+        : esc(a.oldValue || 'Not set') + ' <span class="arrow" aria-label="changed to">to</span> ' + esc(a.newValue || 'Not set')) +
+      '</span></li>').join('');
+  }
+
+  async function loadActivity(jobNo) {
+    try {
+      const items = await window.API.activity(jobNo);
+      if (state.drawerJob !== jobNo) return;
+      state.activity = { job: jobNo, items };
+    } catch (err) {
+      if (state.drawerJob !== jobNo) return;
+      state.activity = { job: jobNo, items: [], error: true };
+    }
+    renderPanel();
   }
 
   function drawerOrder(job) {
     const info = orderInfo(job);
-    const addBtn = '<button type="button" class="btn btn-ghost" data-act="add-to-order">' +
+    const addBtn = '<button type="button" class="btn btn-ghost btn-small" data-act="add-to-order">' +
       (info ? 'Add another project to this order' : 'Add another project for this customer') + '</button>';
     if (info) {
       const all = info.ready === info.total;
@@ -650,7 +978,7 @@
           '<span class="mate-name">#' + m.job + ' ' + esc(m.type) + (m.description ? ' - ' + esc(m.description) : '') + '</span>' +
           '<span class="mate-state">' + esc(mateState(m)) + '</span></button></li>').join('') + '</ul>' +
         '<div class="order-actions">' + addBtn +
-        '<button type="button" class="btn btn-ghost" data-act="unlink">Unlink this job</button></div>';
+        '<button type="button" class="btn btn-ghost btn-small" data-act="unlink">Unlink this job</button></div>';
     }
     const others = state.jobs.filter((x) => x.job !== job.job && !isClosed(x));
     const same = others.filter((x) => sameCustomer(x, job));
@@ -670,8 +998,10 @@
   function mateState(m) {
     if (m.status === 'Dead') return 'Dead';
     if (isReady(m)) return 'Ready';
-    return [m.status !== 'Active' ? m.status : '', m.production ? 'Production: ' + m.production : 'Not started',
-      m.artwork ? 'Artwork: ' + m.artwork : ''].filter(Boolean).join(' - ');
+    const cur = currentStep(m);
+    const hold = m.status === 'On Hold' ? 'On Hold - ' : '';
+    if (!cur) return hold + statusPill(m).text;
+    return hold + LABEL[cur.key] + ': ' + (cur.value || 'not started');
   }
 
   function sameCustomer(a, b) {
@@ -683,66 +1013,79 @@
       const jobs = await window.API.linkJob(jobNo, to);
       mergeJobs(jobs);
       render();
-      if (state.drawerJob === jobNo) { syncDrawer(true); loadActivity(jobNo); }
+      if (state.drawerJob === jobNo) { renderPanel(true); loadActivity(jobNo); }
       toast('Job ' + jobNo + ' linked to order ' + orderOf(findJob(jobNo)));
     } catch (err) {
       toast('Could not link job ' + jobNo + ': ' + (err.message || err), 'error');
-      if (state.drawerJob === jobNo) syncDrawer(true);
+      if (state.drawerJob === jobNo) renderPanel(true);
     }
   }
 
-  function onDrawerOrderClick(e) {
-    const mate = e.target.closest('[data-mate]');
-    if (mate) { openDrawer(Number(mate.dataset.mate)); return; }
-    const act = e.target.closest('[data-act]');
-    if (!act || state.drawerJob == null) return;
+  function onPanelClick(e) {
     const job = findJob(state.drawerJob);
-    if (act.dataset.act === 'add-to-order') openNew(job);
-    if (act.dataset.act === 'unlink') {
-      setField(job.job, 'order', '').then((ok) => { if (ok) { syncDrawer(true); toast('Job ' + job.job + ' unlinked'); } });
+    if (!job) return;
+    const chipBtn = e.target.closest('[data-chip]');
+    if (chipBtn) { openFieldPicker(job.job, chipBtn.dataset.chip, chipBtn); return; }
+    const mate = e.target.closest('[data-mate]');
+    if (mate) { openPanel(Number(mate.dataset.mate)); return; }
+    const tabBtn = e.target.closest('[data-tab]');
+    if (tabBtn) {
+      state.panelTab = tabBtn.dataset.tab;
+      if (state.panelTab !== 'details') state.editing = false;
+      renderPanel(true);
+      if (state.panelTab === 'notes') { const n = $('d-notes'); if (n) n.focus(); }
+      return;
+    }
+    const rm = e.target.closest('[data-remove-file]');
+    if (rm) {
+      const links = fileLinks(job);
+      links.splice(Number(rm.dataset.removeFile), 1);
+      setField(job.job, 'files', links.join('\n'));
+      return;
+    }
+    const act = e.target.closest('[data-act]');
+    if (!act || act.tagName === 'SELECT') return;
+    switch (act.dataset.act) {
+      case 'next': markNextStep(job.job); break;
+      case 'steps': {
+        const items = STEPS.concat(['payment', 'status']).map((k) => ({ label: LABEL[k] + ': ' + (job[k] || 'Not set'), field: k }));
+        openMenu(act, 'Update a step - Job #' + job.job, items, (it) => {
+          const anchor = el.panelBody.querySelector('[data-act="steps"]');
+          openFieldPicker(job.job, it.field, anchor);
+        });
+        break;
+      }
+      case 'edit':
+        state.editing = !state.editing;
+        state.panelTab = 'details';
+        renderPanel(true);
+        if (state.editing) { const c = $('d-customer'); if (c) c.focus(); }
+        break;
+      case 'edit-due': {
+        state.editing = true;
+        renderPanel(true);
+        const d = $('d-due');
+        if (d) d.focus();
+        break;
+      }
+      case 'add-file': {
+        const input = $('file-url');
+        const url = input.value.trim();
+        if (!/^https?:\/\/\S+$/i.test(url)) { toast('Paste a full link starting with https://', 'error'); input.focus(); return; }
+        input.value = '';
+        input.blur();
+        setField(job.job, 'files', fileLinks(job).concat([url]).join('\n'));
+        break;
+      }
+      case 'add-to-order': openNew(job); break;
+      case 'unlink':
+        setField(job.job, 'order', '').then((ok) => { if (ok) { renderPanel(true); toast('Job ' + job.job + ' unlinked'); } });
+        break;
+      default:
     }
   }
 
-  // Date inputs follow the browser's locale, so spell the date out Day Month Year beside them.
-  function showDates(root, values) {
-    root.querySelectorAll('[data-says]').forEach((n) => {
-      const v = values ? values[n.dataset.says] : root.querySelector('[name="' + n.dataset.says + '"]').value;
-      const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || '');
-      n.textContent = d ? new Date(+d[1], d[2] - 1, +d[3]).toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + fmtDate(v) : '';
-    });
-  }
-
-  async function loadActivity(jobNo) {
-    const list = $('activity');
-    try {
-      const items = await window.API.activity(jobNo);
-      if (state.drawerJob !== jobNo || !list.isConnected) return;
-      list.innerHTML = items.length ? items.map((a) =>
-        '<li><span class="act-when">' + esc(fmtStamp(a.at)) + '</span>' +
-        '<span class="act-what"><strong>' + esc(a.field) + '</strong> ' +
-        (a.field === 'Created' ? esc(a.newValue)
-          : esc(a.oldValue || 'Not set') + ' <span class="arrow" aria-label="changed to">to</span> ' + esc(a.newValue || 'Not set')) +
-        '</span></li>').join('') : '<li class="muted">No changes recorded yet.</li>';
-    } catch (err) {
-      if (list.isConnected) list.innerHTML = '<li class="muted">Could not load activity.</li>';
-    }
-  }
-
-  function closeDrawer() {
-    if (state.drawerJob == null) return;
-    const no = state.drawerJob;
-    const active = document.activeElement;
-    if (active && active.dataset && active.dataset.field) active.blur(); // commits a pending text edit
-    state.drawerJob = null;
-    el.drawer.classList.remove('is-open');
-    el.drawerBackdrop.hidden = true;
-    document.body.classList.remove('no-scroll');
-    setTimeout(() => { if (state.drawerJob == null) el.drawer.hidden = true; }, 200);
-    const back = document.querySelector('[data-open="' + no + '"]');
-    if (back && back.offsetParent) back.focus({ preventScroll: true });
-  }
-
-  function onDrawerChange(e) {
+  function onPanelChange(e) {
     const input = e.target;
     if (input.dataset.act === 'link') {
       if (input.value) linkTo(state.drawerJob, Number(input.value));
@@ -763,10 +1106,20 @@
     setField(jobNo, field, value);
   }
 
+  // Date inputs follow the browser's locale, so spell the date out Day Month Year beside them.
+  function showDates(root, values) {
+    root.querySelectorAll('[data-says]').forEach((n) => {
+      const src = values ? values[n.dataset.says] : (root.querySelector('[name="' + n.dataset.says + '"]') || {}).value;
+      const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(src || '');
+      n.textContent = d ? new Date(+d[1], d[2] - 1, +d[3]).toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + fmtDate(src) : '';
+    });
+  }
+
   /* ------------------------------------------------------------ New job */
 
   // from: an existing job when adding another project to its order (or starting one).
   function openNew(from) {
+    closePicker(true);
     el.newForm.reset();
     el.newForm.elements.dateIn.value = todayIso();
     el.projects.innerHTML = '';
@@ -877,7 +1230,7 @@
       });
       const first = [...document.querySelectorAll('[data-job="' + jobs[0].job + '"]')].find((n) => n.offsetParent);
       if (first) first.scrollIntoView({ block: 'center' });
-      if (state.drawerJob != null) syncDrawer(true);
+      if (state.drawerJob != null) renderPanel(true);
     } catch (err) {
       el.newError.textContent = 'Could not create job: ' + (err.message || err);
       el.newError.hidden = false;
@@ -910,10 +1263,12 @@
     toast('Exported ' + state.jobs.length + ' jobs');
   }
 
-  /* ------------------------------------------------------------ Views */
+  /* ------------------------------------------------------------ Views & filters */
 
   function setView(view) {
     state.view = view;
+    if (view !== 'open') state.filters.quick = '';
+    state.selected.clear();
     document.querySelectorAll('.tab').forEach((t) => {
       t.setAttribute('aria-selected', String(t.dataset.view === view));
     });
@@ -921,11 +1276,86 @@
     render();
   }
 
+  function fieldsFilterMenu(anchor) {
+    const items = [{ label: 'All Fields (no filter)', field: '' }]
+      .concat(TRACK.map((k) => ({ label: LABEL[k] + '...', field: k })));
+    openMenu(anchor, 'Filter by a tracking field', items, (it) => {
+      if (!it.field) { state.filters.field = ''; state.filters.value = ''; render(); return; }
+      const opts = (state.lists.options[it.field] || []).slice();
+      state.jobs.forEach((j) => { if (j[it.field] && !opts.includes(j[it.field])) opts.push(j[it.field]); });
+      const values = opts.map((o) => ({ label: o, value: o, tone: CHIP_TONE[o] || 'grey',
+        current: state.filters.field === it.field && state.filters.value === o }))
+        .concat([{ label: 'Not set', value: '__blank__', tone: 'blank' }]);
+      openMenu(el.fieldsBtn, LABEL[it.field] + ' is...', values, (v) => {
+        state.filters.field = it.field;
+        state.filters.value = v.value;
+        render();
+      });
+    });
+  }
+
+  function clearFilter(k) {
+    const f = state.filters;
+    if (k === 'quick' || k === 'all') f.quick = '';
+    if (k === 'q' || k === 'all') { f.q = ''; el.search.value = ''; }
+    if (k === 'field' || k === 'all') { f.field = ''; f.value = ''; }
+    if (k === 'all') f.cat = '';
+    render();
+  }
+
+  async function bulk(action, anchor) {
+    const jobs = [...state.selected].map(findJob).filter(Boolean);
+    if (!jobs.length) return;
+    if (action === 'clear') { state.selected.clear(); render(); return; }
+    if (action === 'next') {
+      const results = await Promise.all(jobs.map((j) => (nextMove(j) ? markNextStep(j.job) : Promise.resolve(false))));
+      toast('Moved ' + results.filter(Boolean).length + ' of ' + jobs.length + ' jobs to their next step');
+      return;
+    }
+    if (action === 'status') {
+      const items = (state.lists.options.status || []).map((o) => ({ label: o, value: o, tone: CHIP_TONE[o] || 'grey' }));
+      openMenu(anchor, 'Set Status for ' + jobs.length + ' jobs', items, (it) => {
+        state.selected.clear();
+        jobs.forEach((j) => setField(j.job, 'status', it.value));
+        render();
+      });
+    }
+  }
+
   /* ------------------------------------------------------------ Events */
 
+  function bindDeferredRedraws() {
+    document.addEventListener('pointerdown', () => { deferred.down = true; }, true);
+    // The click itself fires right after pointerup and redraws as usual;
+    // anything held back during the press is caught up once the click is done.
+    const release = () => {
+      if (!deferred.down) return;
+      deferred.down = false;
+      if (!deferred.board && !deferred.panel) return;
+      setTimeout(() => {
+        if (deferred.board) { deferred.board = false; render(); }
+        if (deferred.panel) { deferred.panel = false; renderPanel(); }
+      }, 0);
+    };
+    document.addEventListener('pointerup', release, true);
+    document.addEventListener('pointercancel', release, true);
+  }
+
   function bind() {
+    bindDeferredRedraws();
     document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
     $('new-btn').addEventListener('click', () => openNew());
+    $('new-cancel').addEventListener('click', () => el.newDialog.close());
+    $('more-btn').addEventListener('click', (e) => {
+      const items = [{ label: 'Export CSV (backup)', act: 'export' }];
+      if (window.API.demo) items.push({ label: 'Reset demo data', act: 'reset' });
+      openMenu(e.currentTarget, 'More', items, (it) => {
+        if (it.act === 'export') exportCsv();
+        if (it.act === 'reset') { window.API.reset(); refresh(); toast('Demo data reset'); }
+      });
+    });
+    el.newForm.addEventListener('submit', submitNew);
+    el.newForm.addEventListener('input', () => { showDates(el.newForm); el.newError.hidden = true; });
     $('add-project').addEventListener('click', () => { addProjectRow().querySelector('select').focus(); });
     el.projects.addEventListener('click', (e) => {
       const b = e.target.closest('.remove-project');
@@ -934,76 +1364,124 @@
       updateSubmitLabel();
     });
     el.newForm.elements.customer.addEventListener('change', fillKnownCustomer);
-    $('new-cancel').addEventListener('click', () => el.newDialog.close());
-    $('export-btn').addEventListener('click', exportCsv);
-    el.newForm.addEventListener('submit', submitNew);
-    el.newForm.addEventListener('input', () => { showDates(el.newForm); el.newError.hidden = true; });
 
-    el.search.addEventListener('input', () => { readFilters(); render(); });
-    el.type.addEventListener('change', () => { readFilters(); render(); });
-    el.field.addEventListener('change', () => { fillValueOptions(); readFilters(); render(); });
-    el.value.addEventListener('change', () => { readFilters(); render(); });
-    el.clear.addEventListener('click', () => {
-      el.search.value = '';
-      el.type.value = '';
-      el.field.value = '';
-      fillValueOptions();
-      readFilters();
+    el.search.addEventListener('input', () => { state.filters.q = el.search.value.trim().toLowerCase(); render(); });
+    el.sort.addEventListener('change', () => { state.filters.sort = el.sort.value; render(); });
+    el.fieldsBtn.addEventListener('click', () => fieldsFilterMenu(el.fieldsBtn));
+    el.stats.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-quick]');
+      if (!b) return;
+      if (state.view !== 'open') setView('open');
+      const q = b.dataset.quick;
+      state.filters.quick = state.filters.quick === q ? '' : q;
       render();
     });
+    el.pills.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-cat]');
+      if (!b) return;
+      state.filters.cat = b.dataset.cat;
+      render();
+    });
+    el.activeFilters.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-clear]');
+      if (b) clearFilter(b.dataset.clear);
+    });
 
-    // One listener for rows, cards and chips.
+    // One listener for rows, cards, steps and pills.
     $('main').addEventListener('click', (e) => {
-      const of = e.target.closest('[data-order-filter]');
-      if (of) {
-        e.stopPropagation();
-        el.search.value = '#' + of.dataset.orderFilter;
-        readFilters();
+      const check = e.target.closest('[data-check]');
+      if (check) {
+        const n = Number(check.dataset.check);
+        if (check.checked) state.selected.add(n); else state.selected.delete(n);
+        renderBulk();
+        return;
+      }
+      if (e.target.id === 'check-all') {
+        visibleJobs().forEach((j) => { if (e.target.checked) state.selected.add(j.job); else state.selected.delete(j.job); });
         render();
         return;
       }
+      if (e.target.closest('.col-check')) return;
+      const of = e.target.closest('[data-order-filter]');
+      if (of) {
+        el.search.value = '#' + of.dataset.orderFilter;
+        state.filters.q = el.search.value.toLowerCase();
+        render();
+        return;
+      }
+      const menu = e.target.closest('[data-row-menu]');
+      if (menu) { rowMenu(Number(menu.dataset.rowMenu), menu); return; }
       const c = e.target.closest('[data-chip]');
       if (c) {
-        e.stopPropagation();
         const same = state.picker && state.picker.job === Number(c.dataset.job) && state.picker.field === c.dataset.chip;
-        closePicker();
-        if (!same) openPicker(Number(c.dataset.job), c.dataset.chip, c);
+        closePicker(true);
+        if (!same) openFieldPicker(Number(c.dataset.job), c.dataset.chip, c);
         return;
       }
       const o = e.target.closest('[data-open]') || e.target.closest('tr.row');
-      if (o) openDrawer(Number(o.dataset.open || o.dataset.job));
+      if (o) openPanel(Number(o.dataset.open || o.dataset.job));
     });
 
     el.pickerOptions.addEventListener('click', (e) => {
       const b = e.target.closest('[data-pick]');
       if (!b || !state.picker) return;
-      const { job, field } = state.picker;
+      const p = state.picker;
+      const item = p.items[Number(b.dataset.pick)];
       closePicker();
-      setField(job, field, b.dataset.pick);
+      p.onPick(item);
     });
-    el.pickerBackdrop.addEventListener('click', closePicker);
+    el.pickerBackdrop.addEventListener('click', () => closePicker());
 
-    el.drawerBody.addEventListener('change', onDrawerChange);
-    el.drawerBody.addEventListener('click', (e) => { if (e.target.closest('#drawer-order')) onDrawerOrderClick(e); });
-    el.drawerBody.addEventListener('input', (e) => {
-      const n = e.target.dataset.field && el.drawerBody.querySelector('[data-says="' + e.target.dataset.field + '"]');
+    el.panelBody.addEventListener('change', onPanelChange);
+    el.panelBody.addEventListener('click', onPanelClick);
+    el.panelBody.addEventListener('input', (e) => {
+      const n = e.target.dataset.field && el.panelBody.querySelector('[data-says="' + e.target.dataset.field + '"]');
       if (n) showDates(n.parentNode, { [e.target.dataset.field]: e.target.value });
     });
-    $('drawer-close').addEventListener('click', closeDrawer);
-    el.drawerBackdrop.addEventListener('click', closeDrawer);
+    el.panelBody.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && e.target.id === 'file-url') { e.preventDefault(); el.panelBody.querySelector('[data-act="add-file"]').click(); }
+    });
+    $('panel-close').addEventListener('click', closePanel);
+    $('panel-more').addEventListener('click', (e) => { if (state.drawerJob != null) rowMenu(state.drawerJob, e.currentTarget); });
+    el.panelBackdrop.addEventListener('click', closePanel);
+    el.bulk.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-bulk]');
+      if (b) bulk(b.dataset.bulk, b);
+    });
 
     document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        el.search.focus();
+        el.search.select();
+        return;
+      }
+      if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && !el.newDialog.open) {
+        e.preventDefault();
+        el.search.focus();
+        return;
+      }
       if (e.key !== 'Escape') return;
       if (state.picker) { closePicker(); e.preventDefault(); }
-      else if (state.drawerJob != null && !el.newDialog.open) { closeDrawer(); e.preventDefault(); }
+      else if (state.drawerJob != null && !el.newDialog.open) { closePanel(); e.preventDefault(); }
     });
-    // Keep the picker attached to its chip while the table or page scrolls.
+    // Keep the picker attached to its anchor while things scroll.
     const follow = () => {
       if (!state.picker) return;
       const a = state.picker.anchor;
-      if (a && a.isConnected) positionPicker(a); else closePicker();
+      if (a && a.isConnected) positionPicker(a); else closePicker(true);
     };
-    window.addEventListener('resize', follow);
+    const measureTop = () => document.documentElement.style.setProperty('--top', document.querySelector('.topbar').offsetHeight + 'px');
+    measureTop();
+    window.addEventListener('resize', () => {
+      measureTop();
+      follow();
+      if (state.drawerJob != null) {
+        const docked = window.matchMedia(WIDE).matches;
+        el.panelBackdrop.hidden = docked;
+        document.body.classList.toggle('no-scroll', !docked);
+      }
+    });
     window.addEventListener('scroll', follow, true);
 
     // Keep every screen in step: poll, and refresh when the tab comes back.
@@ -1011,14 +1489,12 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
     window.addEventListener('focus', refresh);
 
-    if (window.API.demo) {
-      $('demo-banner').hidden = false;
-      $('demo-reset').addEventListener('click', () => { window.API.reset(); refresh(); toast('Demo data reset'); });
-    }
+    if (window.API.demo) $('demo-banner').hidden = false;
+    if (/Mac|iPhone|iPad/.test(navigator.platform)) document.querySelector('.kbd').textContent = '⌘K';
   }
 
   // Test hook (used by tests/ui.test.js).
-  window.__app = { state, refresh, setField, POLL_MS };
+  window.__app = { state, refresh, setField, markNextStep, POLL_MS };
 
   document.body.dataset.view = 'open';
   bind();
